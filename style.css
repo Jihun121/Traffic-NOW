@@ -167,12 +167,21 @@ td {
 
 footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px 16px;
   margin-top: 16px;
   padding: 0 4px;
   color: #8290a5;
   font-size: 12px;
+}
+
+.error-detail {
+  flex-basis: 100%;
+  display: block;
+  color: #9aa4b5;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 @media (max-width: 760px) {
