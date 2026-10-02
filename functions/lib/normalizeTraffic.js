@@ -1,11 +1,11 @@
 const FIELD_ALIASES = {
-  linkId: ["linkId", "linkID", "LINK_ID", "link_id", "링크ID", "링크아이디"],
-  roadName: ["roadName", "road", "ROAD_NAME", "road_name", "도로명"],
+  linkId: ["linkId", "linkID", "LINK_ID", "link_id", "lkId", "링크ID", "링크아이디"],
+  roadName: ["roadName", "road", "ROAD_NAME", "road_name", "roadNm", "도로명"],
   sectionName: ["sectionName", "section", "구간명"],
-  startName: ["startName", "startPoint", "start", "START_NAME", "시점명", "구간시점명", "시점"],
-  endName: ["endName", "endPoint", "end", "END_NAME", "종점명", "구간종점명", "종점"],
-  speed: ["speed", "avgSpeed", "averageSpeed", "SPEED", "AVG_SPEED", "speedKmh", "통행속도", "속도"],
-  volume: ["volume", "trafficVolume", "traffic", "VOLUME", "TRAFFIC_VOLUME", "교통량", "통행량"],
+  startName: ["startName", "startPoint", "start", "START_NAME", "bgngNodeNm", "시점명", "구간시점명", "시점"],
+  endName: ["endName", "endPoint", "end", "END_NAME", "endNodeNm", "종점명", "구간종점명", "종점"],
+  speed: ["speed", "avgSpeed", "averageSpeed", "SPEED", "AVG_SPEED", "speedKmh", "spd", "통행속도", "속도"],
+  volume: ["volume", "trafficVolume", "traffic", "VOLUME", "TRAFFIC_VOLUME", "vol", "교통량", "통행량"],
   updatedAt: [
     "updatedAt",
     "createdDate",
