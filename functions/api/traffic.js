@@ -48,7 +48,7 @@ function readTag(block, tag) {
 
 function parseTrafficXml(xml) {
   const items = [];
-  const itemMatches = String(xml).matchAll(/<item>([\\s\\S]*?)<\\/item>/g);
+  const itemMatches = String(xml).matchAll(/<item>([\\s\\S]*?)<\/item>/g);
 
   for (const match of itemMatches) {
     const block = match[1];
