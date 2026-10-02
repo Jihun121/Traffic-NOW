@@ -4,11 +4,19 @@ const DEFAULT_TIMEOUT_MS = 10000;
 const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic";
 
 function getApiKey(env) {
-  return String(
+  const raw = String(
     env.BUSAN_TRAFFIC_API_KEY ||
     env.BUSAN_API_KEY ||
     ""
   ).trim();
+
+  if (!raw) return "";
+
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function sanitizeUrlForDiagnostics(value) {
