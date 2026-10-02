@@ -47,6 +47,19 @@ function classifyApiError(response, payload) {
     return "부산시 교통 API 응답 시간 초과 · 좌표 영역 조회가 아닌 부산시 데이터 API 자체의 응답 상태를 확인해야 합니다.";
   }
 
+  if (code === "BUSAN_TRAFFIC_API_RESULT_ERROR") {
+    const d = payload?.diagnostics || {};
+    const detail = [
+      d.resultCode ? `resultCode=${d.resultCode}` : "",
+      d.resultMsg || d.returnAuthMsg || "",
+      d.returnReasonCode ? `reason=${d.returnReasonCode}` : ""
+    ].filter(Boolean).join(" · ");
+
+    return detail
+      ? `부산시 교통 API 오류 응답 · ${detail}`
+      : "부산시 교통 API 오류 응답을 받았습니다.";
+  }
+
   if (code === "BUSAN_TRAFFIC_HTTP_ERROR") {
     return "부산시 교통 API HTTP 오류 · 인증키와 API 주소를 확인하세요.";
   }
