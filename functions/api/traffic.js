@@ -167,13 +167,19 @@ export async function onRequestGet(context) {
     }, 400);
   }
 
-  if (maxX - minX > MAX_SPAN_X || maxY - minY > MAX_SPAN_Y) {
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+  const EPSILON = 1e-9;
+
+  if (spanX > MAX_SPAN_X + EPSILON || spanY > MAX_SPAN_Y + EPSILON) {
     return json({
       ok: false,
       error: "조회 영역이 너무 큽니다. 더 작은 영역으로 조회해주세요.",
       limits: {
         maxSpanX: MAX_SPAN_X,
-        maxSpanY: MAX_SPAN_Y
+        maxSpanY: MAX_SPAN_Y,
+        requestedSpanX: spanX,
+        requestedSpanY: spanY
       }
     }, 400);
   }
