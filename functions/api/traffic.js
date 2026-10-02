@@ -1,4 +1,7 @@
-const ITS_ENDPOINT = "http://openapi.its.go.kr/trafficInfo";
+const ITS_ENDPOINTS = [
+  "http://openapi.its.go.kr/trafficInfo",
+  "https://openapi.its.go.kr:9443/trafficInfo"
+];
 
 const MAX_SPAN_X = 0.6;
 const MAX_SPAN_Y = 0.5;
@@ -107,44 +110,54 @@ export async function onRequestGet(context) {
     }, 400);
   }
 
-  const apiUrl = new URL(ITS_ENDPOINT);
-  apiUrl.searchParams.set("apiKey", apiKey);
-  apiUrl.searchParams.set("type", "all");
-  apiUrl.searchParams.set("drcType", "all");
-  apiUrl.searchParams.set("minX", String(minX));
-  apiUrl.searchParams.set("maxX", String(maxX));
-  apiUrl.searchParams.set("minY", String(minY));
-  apiUrl.searchParams.set("maxY", String(maxY));
-  apiUrl.searchParams.set("getType", "xml");
+  let lastFailure = null;
 
-  try {
-    const response = await fetch(apiUrl.toString(), {
-      headers: { accept: "application/json" }
-    });
+  for (const endpoint of ITS_ENDPOINTS) {
+    const apiUrl = new URL(endpoint);
+    apiUrl.searchParams.set("apiKey", apiKey);
+    apiUrl.searchParams.set("type", "all");
+    apiUrl.searchParams.set("minX", String(minX));
+    apiUrl.searchParams.set("maxX", String(maxX));
+    apiUrl.searchParams.set("minY", String(minY));
+    apiUrl.searchParams.set("maxY", String(maxY));
+    apiUrl.searchParams.set("getType", "xml");
 
-    const rawText = await response.text();
+    try {
+      const response = await fetch(apiUrl.toString(), {
+        headers: { accept: "application/xml, text/xml" }
+      });
 
-    if (!response.ok) {
+      const rawText = await response.text();
+
+      if (!response.ok) {
+        lastFailure = {
+          endpoint,
+          status: response.status,
+          body: rawText.slice(0, 500)
+        };
+        continue;
+      }
+
+      const data = parseTrafficXml(rawText)
+        .map(normalizeItem)
+        .filter(item => item.linkId || item.roadName);
+
       return json({
-        ok: false,
-        error: `ITS API HTTP 오류: ${response.status}`,
-        upstream: rawText.slice(0, 1000)
-      }, 502);
+        ok: true,
+        count: data.length,
+        data
+      });
+    } catch (error) {
+      lastFailure = {
+        endpoint,
+        error: error instanceof Error ? error.message : "알 수 없는 네트워크 오류"
+      };
     }
-
-    const data = parseTrafficXml(rawText)
-      .map(normalizeItem)
-      .filter(item => item.linkId || item.roadName);
-
-    return json({
-      ok: true,
-      count: data.length,
-      data
-    });
-  } catch (error) {
-    return json({
-      ok: false,
-      error: error instanceof Error ? error.message : "ITS API 호출 중 오류가 발생했습니다."
-    }, 502);
   }
-}
+
+  return json({
+    ok: false,
+    error: "ITS API에 연결할 수 없습니다. 모든 공식 접속 경로에서 응답을 받지 못했습니다.",
+    diagnostics: lastFailure
+  }, 502);
+
