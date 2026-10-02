@@ -1,7 +1,7 @@
 import { normalizeTrafficPayload } from "./normalizeTraffic.js";
 
 const DEFAULT_TIMEOUT_MS = 10000;
-const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/getBusanITSLINKTraffic";
+const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 
 function getApiKey(env) {
   const raw = String(
@@ -33,10 +33,6 @@ function sanitizeUrlForDiagnostics(value) {
 function buildApiUrl(rawUrl, apiKey) {
   let url = new URL(rawUrl);
 
-  if (url.pathname.endsWith("/BusanITSLINKTraffic")) {
-    url.pathname += "/getBusanITSLINKTraffic";
-  }
-
   if (!url.searchParams.has("serviceKey") && !url.searchParams.has("apiKey")) {
     url.searchParams.set("serviceKey", apiKey);
   }
@@ -50,7 +46,7 @@ function buildApiUrl(rawUrl, apiKey) {
   }
 
   if (!url.searchParams.has("numOfRows")) {
-    url.searchParams.set("numOfRows", "50");
+    url.searchParams.set("numOfRows", "1000");
   }
 
   return url;
@@ -96,7 +92,6 @@ export async function fetchBusanTraffic(context) {
   }
 
   let apiUrl;
-
   try {
     apiUrl = buildApiUrl(rawUrl, apiKey);
   } catch (error) {
@@ -111,8 +106,12 @@ export async function fetchBusanTraffic(context) {
   const timeoutMs = Number(context.env.BUSAN_TRAFFIC_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const startedAt = Date.now();
 
-  try {
-    const response = await fetchWithTimeout(apiUrl.toString(), timeoutMs);
+  async function requestPage(pageNo) {
+    const pageUrl = new URL(apiUrl);
+    pageUrl.searchParams.set("pageNo", String(pageNo));
+    pageUrl.searchParams.set("numOfRows", "1000");
+
+    const response = await fetchWithTimeout(pageUrl.toString(), timeoutMs);
     const elapsedMs = Date.now() - startedAt;
     const rawText = await response.text();
 
@@ -122,7 +121,7 @@ export async function fetchBusanTraffic(context) {
         502,
         "BUSAN_TRAFFIC_HTTP_ERROR",
         {
-          endpoint: sanitizeUrlForDiagnostics(apiUrl.toString()),
+          endpoint: sanitizeUrlForDiagnostics(pageUrl.toString()),
           status: response.status,
           elapsedMs,
           body: rawText.slice(0, 500)
@@ -131,7 +130,6 @@ export async function fetchBusanTraffic(context) {
     }
 
     let payload;
-
     try {
       payload = JSON.parse(rawText);
     } catch (error) {
@@ -140,7 +138,7 @@ export async function fetchBusanTraffic(context) {
         502,
         "BUSAN_TRAFFIC_INVALID_JSON",
         {
-          endpoint: sanitizeUrlForDiagnostics(apiUrl.toString()),
+          endpoint: sanitizeUrlForDiagnostics(pageUrl.toString()),
           elapsedMs,
           detail: error instanceof Error ? error.message : String(error),
           body: rawText.slice(0, 500)
@@ -148,12 +146,67 @@ export async function fetchBusanTraffic(context) {
       );
     }
 
-    const normalized = normalizeTrafficPayload(payload);
+    const resultCode = String(payload?.resultCode ?? payload?.result?.resultCode ?? "");
+    if (resultCode && resultCode !== "00" && resultCode !== "0") {
+      throw new BusanTrafficError(
+        "부산시 교통 API가 오류를 반환했습니다.",
+        502,
+        "BUSAN_TRAFFIC_API_RESULT_ERROR",
+        {
+          endpoint: sanitizeUrlForDiagnostics(pageUrl.toString()),
+          resultCode,
+          resultMsg: payload?.resultMsg ?? payload?.result?.resultMsg ?? ""
+        }
+      );
+    }
+
+    return {
+      payload,
+      elapsedMs,
+      url: pageUrl
+    };
+  }
+
+  try {
+    const first = await requestPage(1);
+    const content = first.payload?.content || {};
+    const totalCount = Number(content?.totalCount ?? 0);
+    const pageSize = 1000;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+
+    const responses = [first.payload];
+
+    // 북구 테스트에 필요한 데이터가 첫 페이지에 없을 수 있으므로
+    // 전체 링크를 가져오되, 동시 요청은 4개씩만 실행합니다.
+    if (totalPages > 1) {
+      for (let page = 2; page <= totalPages; page += 4) {
+        const pageNumbers = [];
+        for (let n = page; n < page + 4 && n <= totalPages; n += 1) {
+          pageNumbers.push(n);
+        }
+
+        const batch = await Promise.all(pageNumbers.map(requestPage));
+        responses.push(...batch.map((item) => item.payload));
+      }
+    }
+
+    const rawItems = responses.flatMap((payload) =>
+      Array.isArray(payload?.content?.items) ? payload.content.items : []
+    );
+
+    const normalized = normalizeTrafficPayload({
+      totalCount,
+      content: {
+        totalCount,
+        items: rawItems
+      }
+    });
 
     return {
       ...normalized,
       fetchedAt: new Date().toISOString(),
-      upstreamMs: elapsedMs
+      upstreamMs: Date.now() - startedAt,
+      pageCount: totalPages
     };
   } catch (error) {
     if (error instanceof BusanTrafficError) {
