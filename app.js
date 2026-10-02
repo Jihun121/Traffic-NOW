@@ -1,17 +1,12 @@
 const REGIONS = {
   busan: {
-    name: "부산",
-    minX: 129.00,
-    maxX: 129.18,
-    minY: 35.05,
+    // 부산 북구 중심부 테스트용 범위.
+    // ITS에서 넓은 조회 영역을 거부하는 문제를 피하기 위해 작게 제한합니다.
+    name: "부산 북구 테스트",
+    minX: 128.98,
+    maxX: 129.04,
+    minY: 35.17,
     maxY: 35.23
-  },
-  seoul: {
-    name: "서울",
-    minX: 126.73,
-    maxX: 127.20,
-    minY: 37.40,
-    maxY: 37.72
   }
 };
 
@@ -118,7 +113,7 @@ function renderSummary(region, rows, payload = {}) {
 
 function formatApiDate(value) {
   const text = String(value);
-  if (/^\\d{14}$/.test(text)) {
+  if (/^\d{14}$/.test(text)) {
     return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}`;
   }
   return text;
