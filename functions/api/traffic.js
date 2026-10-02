@@ -2,8 +2,8 @@ const ITS_ENDPOINT = "http://openapi.its.go.kr/trafficInfo";
 
 const CACHE_TTL_SECONDS = 15;
 const UPSTREAM_TIMEOUT_MS = 8000;
-const MAX_SPAN_X = 0.18;
-const MAX_SPAN_Y = 0.18;
+const MAX_SPAN_X = 0.08;
+const MAX_SPAN_Y = 0.08;
 const SLOWEST_LIMIT = 30;
 
 function json(data, status = 200, extraHeaders = {}) {
@@ -174,7 +174,7 @@ export async function onRequestGet(context) {
   if (spanX > MAX_SPAN_X + EPSILON || spanY > MAX_SPAN_Y + EPSILON) {
     return json({
       ok: false,
-      error: "조회 영역이 너무 큽니다. 더 작은 영역으로 조회해주세요.",
+      error: "조회 영역이 너무 큽니다. 부산 북구 테스트 범위보다 큰 영역은 조회할 수 없습니다.",
       limits: {
         maxSpanX: MAX_SPAN_X,
         maxSpanY: MAX_SPAN_Y,
