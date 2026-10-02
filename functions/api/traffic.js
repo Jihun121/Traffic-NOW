@@ -81,9 +81,14 @@ export async function onRequestGet(context) {
 
     stage = "cache-read";
     if (!forceRefresh) {
-      source = await readTrafficCache(context.request);
-      if (source) {
-        cacheState = "HIT";
+      try {
+        source = await readTrafficCache(context.request);
+        if (source) {
+          cacheState = "HIT";
+        }
+      } catch (cacheError) {
+        // Cache API 오류가 실시간 교통 조회 전체를 막지 않도록 무시합니다.
+        source = null;
       }
     }
 
@@ -93,15 +98,12 @@ export async function onRequestGet(context) {
       cacheState = "MISS";
       stage = "cache-write";
       try {
-        await writeTrafficCache(context.request, source, SOURCE_CACHE_TTL_SECONDS);
-      } catch (cacheError) {
-        // 캐시 저장 실패는 실시간 데이터 응답 자체를 실패시키지 않습니다.
-        source = {
-          ...source,
-          cacheWarning: cacheError instanceof Error
-            ? cacheError.message
-            : String(cacheError)
-        };
+        context.waitUntil(
+          writeTrafficCache(context.request, source, SOURCE_CACHE_TTL_SECONDS)
+            .catch(() => undefined)
+        );
+      } catch {
+        // Cache API를 사용할 수 없는 런타임에서도 데이터 응답은 계속합니다.
       }
     }
 
@@ -109,9 +111,7 @@ export async function onRequestGet(context) {
     const filteredRows = filterTrafficRegion(source.rows || [], regionKey);
     stage = "payload-build";
     const payload = createPayload(regionKey, source, filteredRows, cacheState, startedAt);
-    if (source.cacheWarning) {
-      payload.cacheWarning = source.cacheWarning;
-    }
+
 
     return json(payload, 200, {
       "cache-control": "public, max-age=0, s-maxage=" + CACHE_TTL_SECONDS,
