@@ -116,7 +116,11 @@ export async function onRequestGet(context) {
       error: "교통정보 처리 중 서버 오류가 발생했습니다.",
       diagnostics: {
         code: "TRAFFIC_INTERNAL_ERROR",
-        detail: error instanceof Error ? error.message : String(error)
+        detail: error instanceof Error ? error.message : String(error),
+        name: error?.name || "UnknownError",
+        stack: error instanceof Error
+          ? String(error.stack || "").split("\n").slice(0, 4).join("\n")
+          : ""
       }
     }, 500);
   }
