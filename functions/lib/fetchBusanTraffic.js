@@ -1,7 +1,7 @@
 import { normalizeTrafficPayload } from "./normalizeTraffic.js";
 
 const DEFAULT_TIMEOUT_MS = 10000;
-const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic";
+const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/getBusanITSLINKTraffic";
 
 function getApiKey(env) {
   const raw = String(
@@ -31,7 +31,11 @@ function sanitizeUrlForDiagnostics(value) {
 }
 
 function buildApiUrl(rawUrl, apiKey) {
-  const url = new URL(rawUrl);
+  let url = new URL(rawUrl);
+
+  if (url.pathname.endsWith("/BusanITSLINKTraffic")) {
+    url.pathname += "/getBusanITSLINKTraffic";
+  }
 
   if (!url.searchParams.has("serviceKey") && !url.searchParams.has("apiKey")) {
     url.searchParams.set("serviceKey", apiKey);
@@ -46,7 +50,7 @@ function buildApiUrl(rawUrl, apiKey) {
   }
 
   if (!url.searchParams.has("numOfRows")) {
-    url.searchParams.set("numOfRows", "1000");
+    url.searchParams.set("numOfRows", "50");
   }
 
   return url;
