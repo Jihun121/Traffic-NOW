@@ -1,6 +1,7 @@
 import { normalizeTrafficPayload } from "./normalizeTraffic.js";
 
-const DEFAULT_TIMEOUT_MS = 7000;
+const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic";
 
 function getApiKey(env) {
   return String(
@@ -30,6 +31,14 @@ function buildApiUrl(rawUrl, apiKey) {
 
   if (!url.searchParams.has("resultType") && !url.searchParams.has("type")) {
     url.searchParams.set("resultType", "json");
+  }
+
+  if (!url.searchParams.has("pageNo")) {
+    url.searchParams.set("pageNo", "1");
+  }
+
+  if (!url.searchParams.has("numOfRows")) {
+    url.searchParams.set("numOfRows", "1000");
   }
 
   return url;
@@ -63,16 +72,8 @@ export class BusanTrafficError extends Error {
 }
 
 export async function fetchBusanTraffic(context) {
-  const rawUrl = String(context.env.BUSAN_TRAFFIC_API_URL || "").trim();
+  const rawUrl = String(context.env.BUSAN_TRAFFIC_API_URL || DEFAULT_API_URL).trim();
   const apiKey = getApiKey(context.env);
-
-  if (!rawUrl) {
-    throw new BusanTrafficError(
-      "BUSAN_TRAFFIC_API_URL이 설정되어 있지 않습니다.",
-      500,
-      "BUSAN_TRAFFIC_API_URL_MISSING"
-    );
-  }
 
   if (!apiKey && !/[?&](serviceKey|apiKey)=/i.test(rawUrl)) {
     throw new BusanTrafficError(
