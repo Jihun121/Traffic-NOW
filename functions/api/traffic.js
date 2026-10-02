@@ -1,7 +1,13 @@
 import { filterTrafficRegion, getTrafficRegion } from "../lib/filterTrafficRegion.js";
+import {
+  calculateBusanTrafficStats,
+  getCongestionTop10,
+  enrichRowsWithTrafficAnalysis
+} from "../lib/trafficAnalyzer.js";
+import { fetchBusanTraffic } from "../lib/fetchBusanTraffic.js";
+import { fetchItsTraffic } from "../lib/fetchItsTraffic.js";
 
 const SNAPSHOT_RESPONSE_TTL_SECONDS = 30;
-const SLOWEST_LIMIT = 30;
 const SNAPSHOT_KEY = "traffic:busan:latest";
 
 function json(data, status = 200, extraHeaders = {}) {
@@ -15,98 +21,126 @@ function json(data, status = 200, extraHeaders = {}) {
   });
 }
 
-function calculateAverage(rows) {
-  const speeds = rows
-    .map((row) => Number(row.speed))
-    .filter((value) => Number.isFinite(value) && value >= 0);
+/**
+ * KV 스냅샷이 없을 경우 온디맨드로 데이터를 수집 및 분석하여 KV에 캐싱
+ */
+async function fallbackOnDemandFetch(context) {
+  // 1. 부산 데이터 수집
+  const busanResult = await fetchBusanTraffic(context);
+  let rows = busanResult?.rows || [];
 
-  if (!speeds.length) return null;
+  // 2. ITS 데이터 수집 시도 (실패해도 부산 데이터로 유지)
+  try {
+    const itsResult = await fetchItsTraffic(context);
+    if (itsResult.ok && Array.isArray(itsResult.items) && itsResult.items.length > 0) {
+      rows.push(...itsResult.items);
+    }
+  } catch (err) {
+    console.warn("On-demand ITS fetch warning:", err?.message || err);
+  }
 
-  return Number(
-    (speeds.reduce((sum, value) => sum + value, 0) / speeds.length).toFixed(1)
-  );
-}
+  // 3. 도로별 분석 및 태깅
+  const enrichedRows = enrichRowsWithTrafficAnalysis(rows);
+  const stats = calculateBusanTrafficStats(enrichedRows);
+  const top10 = getCongestionTop10(enrichedRows);
 
-function createPayload(regionKey, source, rows, cacheState, startedAt) {
-  const region = getTrafficRegion(regionKey);
-  const sorted = [...rows]
-    .filter((row) => Number.isFinite(Number(row.speed)))
-    .sort((a, b) => Number(a.speed) - Number(b.speed));
-
-  return {
-    ok: true,
-    source: "부산광역시 교통정보서비스센터",
-    region: {
-      key: regionKey,
-      name: region.name
-    },
-    count: source.totalCount,
-    filteredCount: rows.length,
-    averageSpeed: calculateAverage(rows),
-    updatedAt: rows
-      .map((row) => row.updatedAt)
-      .filter(Boolean)
-      .sort()
-      .at(-1) || null,
-    data: sorted.slice(0, SLOWEST_LIMIT),
-    cache: cacheState,
-    timing: {
-      upstreamMs: source.upstreamMs ?? null,
-      totalMs: Date.now() - startedAt
-    },
-    fetchedAt: source.fetchedAt ?? null
+  const snapshot = {
+    source: "부산광역시 링크소통정보 & 국토교통부 ITS (실시간)",
+    stats,
+    top10,
+    rows: enrichedRows,
+    totalCount: enrichedRows.length,
+    fetchedAt: new Date().toISOString()
   };
+
+  // 비동기로 KV 캐시 저장
+  if (context.env?.TRAFFIC_CACHE) {
+    context.waitUntil(
+      context.env.TRAFFIC_CACHE.put(
+        SNAPSHOT_KEY,
+        JSON.stringify(snapshot),
+        { expirationTtl: 60 * 60 * 2 }
+      ).catch((err) => console.error("KV put error in fallback:", err))
+    );
+  }
+
+  return snapshot;
 }
 
 export async function onRequestGet(context) {
   const startedAt = Date.now();
   let stage = "start";
   const url = new URL(context.request.url);
-  const regionKey = url.searchParams.get("region") || "busan-north-gu";
-
-  if (regionKey !== "busan-north-gu" && regionKey !== "busan") {
-    return json({
-      ok: false,
-      error: "지원하지 않는 지역입니다.",
-      supportedRegions: ["busan-north-gu", "busan"]
-    }, 400);
-  }
+  const regionKey = url.searchParams.get("region") || "busan";
+  const forceRefresh = url.searchParams.get("forceRefresh") === "1";
 
   try {
     let source = null;
     let cacheState = "MISS";
 
-    // 사용자 요청에서는 부산 원본 API를 호출하지 않습니다.
-    // 배경 수집기가 KV에 저장한 최신 스냅샷만 읽습니다.
-    if (context.env.TRAFFIC_CACHE) {
+    // 1. KV 캐시 스냅샷 확인
+    if (context.env?.TRAFFIC_CACHE && !forceRefresh) {
       stage = "snapshot-read";
       const snapshot = await context.env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json");
-      if (snapshot && Array.isArray(snapshot.rows)) {
+      if (snapshot && Array.isArray(snapshot.rows) && snapshot.rows.length > 0) {
         source = snapshot;
         cacheState = "SNAPSHOT";
       }
     }
 
+    // 2. 스냅샷이 없거나 강제 새로고침인 경우 On-demand Fallback 수집
     if (!source) {
+      stage = "fallback-fetch";
+      source = await fallbackOnDemandFetch(context);
+      cacheState = "ON_DEMAND";
+    }
+
+    if (!source || !Array.isArray(source.rows)) {
       return json({
         ok: false,
-        error: "최신 부산 교통 스냅샷이 아직 준비되지 않았습니다.",
-        diagnostics: {
-          code: "TRAFFIC_SNAPSHOT_NOT_READY"
-        }
+        error: "교통 데이터를 준비할 수 없습니다.",
+        diagnostics: { code: "TRAFFIC_DATA_UNAVAILABLE" }
       }, 503);
     }
 
-    stage = "region-filter";
-    const filteredRows = filterTrafficRegion(source.rows || [], regionKey);
-    stage = "payload-build";
-    const payload = createPayload(regionKey, source, filteredRows, cacheState, startedAt);
+    stage = "analysis-and-filter";
+    const region = getTrafficRegion(regionKey);
+    const allRows = source.rows;
 
+    // 부산 전체 통계 및 정체 TOP 10 (스냅샷에 이미 있으면 재사용, 없으면 계산)
+    const stats = source.stats || calculateBusanTrafficStats(allRows);
+    const top10 = source.top10 || getCongestionTop10(allRows);
+
+    // 사용자가 선택한 지역/구간 필터링
+    const filteredRows = filterTrafficRegion(allRows, regionKey);
+    const enrichedFiltered = enrichRowsWithTrafficAnalysis(filteredRows);
+
+    // 정체 순(오름차순 속도)으로 기본 정렬
+    const sortedFiltered = [...enrichedFiltered].sort((a, b) => Number(a.speed) - Number(b.speed));
+
+    const payload = {
+      ok: true,
+      source: source.source || "부산광역시 교통정보서비스센터 & 국토부 ITS",
+      region: {
+        key: regionKey,
+        name: region.name
+      },
+      stats,
+      top10,
+      data: sortedFiltered.slice(0, 100), // 선택 지역의 도로 최대 100개
+      filteredCount: filteredRows.length,
+      totalCount: allRows.length,
+      updatedAt: source.fetchedAt || new Date().toISOString(),
+      cache: cacheState,
+      timing: {
+        totalMs: Date.now() - startedAt
+      }
+    };
 
     return json(payload, 200, {
-      "cache-control": "public, max-age=0, s-maxage=" + SNAPSHOT_RESPONSE_TTL_SECONDS,
+      "cache-control": `public, max-age=0, s-maxage=${SNAPSHOT_RESPONSE_TTL_SECONDS}`,
       "X-Traffic-Cache": cacheState,
-      "X-Traffic-Source": "BUSAN"
+      "X-Traffic-Source": "BUSAN+ITS"
     });
   } catch (error) {
     return json({
@@ -116,10 +150,7 @@ export async function onRequestGet(context) {
         code: "TRAFFIC_INTERNAL_ERROR",
         detail: error instanceof Error ? error.message : String(error),
         stage,
-        name: error?.name || "UnknownError",
-        stack: error instanceof Error
-          ? String(error.stack || "").split("\n").slice(0, 4).join("\n")
-          : ""
+        name: error?.name || "UnknownError"
       }
     }, 500);
   }

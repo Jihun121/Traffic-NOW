@@ -3,77 +3,165 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Traffic NOW</title>
-  <meta name="description" content="대한민국 실시간 교통정보">
+  <title>Traffic NOW - 부산 실시간 교통정보</title>
+  <meta name="description" content="부산광역시 및 국토부 ITS 연계 실시간 교통 분석 대시보드">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <main class="app">
+    <!-- 1. 헤더 섹션 -->
     <header class="hero">
-      <div>
-        <p class="eyebrow">REALTIME TRAFFIC</p>
+      <div class="hero-brand">
+        <div class="badge-tag">REALTIME TRAFFIC ANALYTICS</div>
         <h1>Traffic NOW</h1>
-        <p class="subtitle">부산 실시간 교통정보 · 북구 테스트</p>
+        <p class="subtitle">부산 전역 실시간 교통 흐름 분석 및 정체 감지 시스템</p>
       </div>
-      <div class="status">
-        <span id="statusDot" class="dot"></span>
-        <span id="statusText">연결 대기</span>
+      <div class="hero-actions">
+        <div class="status-indicator">
+          <span id="statusDot" class="dot"></span>
+          <span id="statusText">데이터 준비 중</span>
+        </div>
+        <button type="button" id="refreshButton" class="btn-refresh">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          새로고침
+        </button>
       </div>
     </header>
 
-    <section class="toolbar">
-      <button type="button" data-region="busan">부산 북구 테스트</button>
-      <button type="button" id="refreshButton">최신 데이터 확인</button>
-    </section>
-
-    <section class="summary-grid">
-      <article class="card">
-        <span>조회 구간</span>
-        <strong id="regionName">-</strong>
-      </article>
-      <article class="card">
-        <span>도로 구간</span>
-        <strong id="linkCount">-</strong>
-      </article>
-      <article class="card">
-        <span>평균 속도</span>
-        <strong id="avgSpeed">-</strong>
-      </article>
-      <article class="card">
-        <span>기준 시각</span>
-        <strong id="updatedAt">-</strong>
-      </article>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <h2>느린 구간</h2>
-          <p>현재 조회 영역에서 속도가 낮은 도로부터 표시합니다.</p>
-        </div>
-        <span id="resultCount" class="count">0건</span>
+    <!-- 2. 부산 전체 통계 요약 카드 (두번째 이미지: 부산 전체 통계) -->
+    <section class="section-container">
+      <div class="section-title-wrap">
+        <h2>📊 부산 전체 교통 통계</h2>
+        <span class="update-label" id="updatedAtLabel">기준: 확인 중</span>
       </div>
 
-      <div id="message" class="message">백그라운드 수집된 부산 교통 데이터에서 북구 구간을 즉시 표시합니다.</div>
+      <div class="summary-grid">
+        <article class="card stat-card">
+          <span class="card-label">부산 도로 평균속도</span>
+          <strong class="card-value" id="statAvgSpeed">-</strong>
+          <span class="card-sub" id="statAvgSub">전체 모니터링 링크 집계</span>
+        </article>
+
+        <article class="card stat-card">
+          <span class="card-label">모니터링 도로 구간</span>
+          <strong class="card-value" id="statTotalLinks">-</strong>
+          <span class="card-sub">부산 시내 + 도시고속 링크</span>
+        </article>
+
+        <article class="card stat-card">
+          <span class="card-label">실시간 종합 상태</span>
+          <strong class="card-value" id="statCongestionLevel">-</strong>
+          <span class="card-sub" id="statLevelDetail">혼잡도 지수 산출 중</span>
+        </article>
+
+        <article class="card stat-card">
+          <span class="card-label">최대 정체 병목 도로</span>
+          <strong class="card-value card-value-sm" id="statSlowestRoad">-</strong>
+          <span class="card-sub" id="statSlowestSpeed">-</span>
+        </article>
+      </div>
+
+      <!-- 원활 / 서행 / 정체 3단계 비율 게이지 바 -->
+      <div class="card ratio-card">
+        <div class="ratio-header">
+          <span class="ratio-title">도로별 속도 기준 통행 현황 (원활 / 서행 / 정체)</span>
+          <div class="legend-group">
+            <span class="legend-item"><span class="legend-dot dot-smooth"></span> 원활 <b id="ratioSmoothText">0%</b></span>
+            <span class="legend-item"><span class="legend-dot dot-slow"></span> 서행 <b id="ratioSlowText">0%</b></span>
+            <span class="legend-item"><span class="legend-dot dot-congested"></span> 정체 <b id="ratioCongestedText">0%</b></span>
+          </div>
+        </div>
+        <div class="ratio-bar-wrap">
+          <div id="barSmooth" class="ratio-bar bar-smooth" style="width: 33.3%;"></div>
+          <div id="barSlow" class="ratio-bar bar-slow" style="width: 33.3%;"></div>
+          <div id="barCongested" class="ratio-bar bar-congested" style="width: 33.4%;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. 실시간 정체 TOP 10 랭킹 (두번째 이미지: 정체 TOP 10) -->
+    <section class="section-container">
+      <div class="section-title-wrap">
+        <div>
+          <h2>🚨 실시간 정체 TOP 10</h2>
+          <p class="section-desc">현재 부산에서 속도가 가장 느리고 정체가 심각한 상위 10개 도로 구간입니다.</p>
+        </div>
+        <span class="top10-badge">LIVE RANKING</span>
+      </div>
+
+      <div class="top10-grid" id="top10Container">
+        <!-- JS로 10개 카드 동적 렌더링 -->
+        <div class="loading-placeholder">정체 TOP 10 데이터를 분석하고 있습니다...</div>
+      </div>
+    </section>
+
+    <!-- 4. 도로별 상세 조회 및 필터 테이블 -->
+    <section class="section-container panel">
+      <div class="panel-header">
+        <div>
+          <h2>🛣️ 도로별 상세 소통 정보</h2>
+          <p class="section-desc">권역별 또는 도로 유형별로 실시간 속도와 상태를 확인하세요.</p>
+        </div>
+        <div class="panel-search-wrap">
+          <input type="text" id="searchInput" placeholder="도로명 또는 구간 검색 (예: 중앙대로, 만덕)..." autocomplete="off">
+        </div>
+      </div>
+
+      <!-- 권역 및 필터 툴바 -->
+      <div class="toolbar">
+        <div class="region-tabs" id="regionTabs">
+          <button type="button" class="tab-btn active" data-region="busan">부산 전체</button>
+          <button type="button" class="tab-btn" data-region="busan-expressway">도시고속·대교</button>
+          <button type="button" class="tab-btn" data-region="busan-north-gu">북구</button>
+          <button type="button" class="tab-btn" data-region="busan-haeundae">해운대·수영</button>
+          <button type="button" class="tab-btn" data-region="busan-jin">부산진·서면</button>
+        </div>
+        <div class="filter-toggles">
+          <label class="toggle-checkbox">
+            <input type="checkbox" id="onlyCongestedCheck">
+            <span>정체·서행만 보기</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="statusMessage" class="message">실시간 데이터를 로드하는 중입니다...</div>
 
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>도로</th>
-              <th>속도</th>
-              <th>구간</th>
-              <th>링크 ID</th>
+              <th style="width: 80px;">상태</th>
+              <th>도로명</th>
+              <th>도로 유형</th>
+              <th>구간 (시점 → 종점)</th>
+              <th style="width: 120px;">현재 속도</th>
+              <th style="width: 110px;">링크 ID</th>
             </tr>
           </thead>
           <tbody id="trafficTable"></tbody>
         </table>
       </div>
+      <div class="table-footer">
+        <span id="resultCountLabel">조회 결과: 0건</span>
+      </div>
     </section>
 
-    <footer>
-      <span>데이터: 부산광역시 교통정보서비스센터</span>
-      <span>부산시 링크 교통 데이터 테스트 버전</span>
+    <!-- 기준 설명 및 푸터 -->
+    <footer class="app-footer">
+      <div class="criteria-box">
+        <strong>💡 도로별 속도 판정 기준 안내:</strong>
+        <span>도시고속/대교 (원활 50↑ / 서행 30~49 / 정체 30↓)</span> · 
+        <span>간선대로 (원활 35↑ / 서행 20~34 / 정체 20↓)</span> · 
+        <span>일반시내 (원활 25↑ / 서행 15~24 / 정체 15↓)</span>
+      </div>
+      <div class="footer-meta">
+        <span>데이터 연동: 부산광역시 교통정보서비스센터(API), 국토교통부 국가교통정보센터(ITS)</span>
+        <span>호스팅: Cloudflare Pages & Workers</span>
+      </div>
       <small id="errorDetail" class="error-detail" aria-live="polite"></small>
     </footer>
   </main>
