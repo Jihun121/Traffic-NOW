@@ -25,6 +25,8 @@ async function fetchPage(apiKey, pageNo) {
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
+    console.log({ event: "fetch-page-start", pageNo });
+
     const response = await fetch(url, {
       headers: { accept: "application/json" },
       signal: controller.signal
@@ -44,6 +46,15 @@ async function fetchPage(apiKey, pageNo) {
         `API error ${header.returnReasonCode}: ${header.errMsg || header.returnAuthMsg || ""}`
       );
     }
+
+    console.log({
+      event: "fetch-page-success",
+      pageNo,
+      httpStatus: response.status,
+      itemCount: Array.isArray(payload?.content?.items)
+        ? payload.content.items.length
+        : 0
+    });
 
     return payload;
   } finally {
@@ -81,54 +92,98 @@ function normalizeItems(payload) {
 
 export default {
   async scheduled(controller, env) {
-    const apiKey = getApiKey(env);
-
-    if (!apiKey) {
-      throw new Error("BUSAN_TRAFFIC_API_KEY secret is not configured.");
-    }
-
     const startedAt = Date.now();
-    const first = await fetchPage(apiKey, 1);
-    const totalCount = Number(first?.content?.totalCount ?? 0);
-    const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
-    const rows = normalizeItems(first);
+    console.log({
+      event: "collector-start",
+      scheduledTime: controller?.scheduledTime ?? null,
+      cron: controller?.cron ?? null,
+      hasApiKey: Boolean(getApiKey(env)),
+      hasKvBinding: Boolean(env.TRAFFIC_CACHE)
+    });
 
-    for (let start = 2; start <= totalPages; start += MAX_PARALLEL_PAGES) {
-      const pageNumbers = [];
+    try {
+      const apiKey = getApiKey(env);
 
-      for (
-        let page = start;
-        page < start + MAX_PARALLEL_PAGES && page <= totalPages;
-        page += 1
-      ) {
-        pageNumbers.push(page);
+      if (!apiKey) {
+        throw new Error("BUSAN_TRAFFIC_API_KEY secret is not configured.");
       }
 
-      const pages = await Promise.all(
-        pageNumbers.map((pageNo) => fetchPage(apiKey, pageNo))
+      if (!env.TRAFFIC_CACHE) {
+        throw new Error("TRAFFIC_CACHE KV binding is not configured.");
+      }
+
+      const first = await fetchPage(apiKey, 1);
+      const totalCount = Number(first?.content?.totalCount ?? 0);
+      const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+      const rows = normalizeItems(first);
+
+      console.log({
+        event: "collector-pagination",
+        totalCount,
+        totalPages,
+        normalizedRowsAfterFirstPage: rows.length
+      });
+
+      for (let start = 2; start <= totalPages; start += MAX_PARALLEL_PAGES) {
+        const pageNumbers = [];
+
+        for (
+          let page = start;
+          page < start + MAX_PARALLEL_PAGES && page <= totalPages;
+          page += 1
+        ) {
+          pageNumbers.push(page);
+        }
+
+        const pages = await Promise.all(
+          pageNumbers.map((pageNo) => fetchPage(apiKey, pageNo))
+        );
+
+        for (const payload of pages) {
+          rows.push(...normalizeItems(payload));
+        }
+
+        console.log({
+          event: "collector-batch-complete",
+          pages: pageNumbers,
+          accumulatedRows: rows.length
+        });
+      }
+
+      const snapshot = {
+        source: "부산광역시_링크소통정보",
+        rows,
+        totalCount,
+        pageCount: totalPages,
+        fetchedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAt
+      };
+
+      await env.TRAFFIC_CACHE.put(
+        SNAPSHOT_KEY,
+        JSON.stringify(snapshot),
+        {
+          expirationTtl: 60 * 60 * 2
+        }
       );
 
-      for (const payload of pages) {
-        rows.push(...normalizeItems(payload));
-      }
+      console.log({
+        event: "collector-kv-write-success",
+        key: SNAPSHOT_KEY,
+        rowCount: rows.length,
+        totalCount,
+        durationMs: Date.now() - startedAt
+      });
+    } catch (error) {
+      console.error({
+        event: "collector-failed",
+        name: error?.name || "Error",
+        message: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - startedAt
+      });
+      throw error;
     }
-
-    const snapshot = {
-      source: "부산광역시_링크소통정보",
-      rows,
-      totalCount,
-      pageCount: totalPages,
-      fetchedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedAt
-    };
-
-    await env.TRAFFIC_CACHE.put(
-      SNAPSHOT_KEY,
-      JSON.stringify(snapshot),
-      {
-        expirationTtl: 60 * 60 * 2
-      }
-    );
   }
 };
