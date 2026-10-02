@@ -62,6 +62,7 @@ function createPayload(regionKey, source, rows, cacheState, startedAt) {
 
 export async function onRequestGet(context) {
   const startedAt = Date.now();
+  let stage = "start";
   const url = new URL(context.request.url);
   const regionKey = url.searchParams.get("region") || "busan-north-gu";
   const forceRefresh = url.searchParams.get("forceRefresh") === "1";
@@ -78,6 +79,7 @@ export async function onRequestGet(context) {
     let source = null;
     let cacheState = "MISS";
 
+    stage = "cache-read";
     if (!forceRefresh) {
       source = await readTrafficCache(context.request);
       if (source) {
@@ -86,12 +88,16 @@ export async function onRequestGet(context) {
     }
 
     if (!source) {
+      stage = "upstream-fetch";
       source = await fetchBusanTraffic(context);
       cacheState = "MISS";
+      stage = "cache-write";
       await writeTrafficCache(context.request, source, SOURCE_CACHE_TTL_SECONDS);
     }
 
+    stage = "region-filter";
     const filteredRows = filterTrafficRegion(source.rows || [], regionKey);
+    stage = "payload-build";
     const payload = createPayload(regionKey, source, filteredRows, cacheState, startedAt);
 
     return json(payload, 200, {
@@ -117,6 +123,7 @@ export async function onRequestGet(context) {
       diagnostics: {
         code: "TRAFFIC_INTERNAL_ERROR",
         detail: error instanceof Error ? error.message : String(error),
+        stage,
         name: error?.name || "UnknownError",
         stack: error instanceof Error
           ? String(error.stack || "").split("\n").slice(0, 4).join("\n")
