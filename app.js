@@ -49,10 +49,23 @@ function classifyApiError(response, payload) {
 
   if (code === "BUSAN_TRAFFIC_API_RESULT_ERROR") {
     const d = payload?.diagnostics || {};
+    const resultCode = String(d.resultCode || d.returnReasonCode || "");
+
+    if (resultCode === "30") {
+      return "부산시 교통 API 인증키가 등록되지 않았습니다. Cloudflare의 BUSAN_TRAFFIC_API_KEY가 해당 부산광역시_링크소통정보 서비스키인지 확인하세요.";
+    }
+
+    if (resultCode === "20") {
+      return "부산시 교통 API 접근 권한이 없습니다. 부산광역시_링크소통정보 활용신청/승인 상태와 Cloudflare 키를 확인하세요.";
+    }
+
+    if (resultCode === "31") {
+      return "부산시 교통 API 인증키 사용기간이 만료되었습니다. 공공데이터포털에서 서비스키 기간을 확인하세요.";
+    }
+
     const detail = [
-      d.resultCode ? `resultCode=${d.resultCode}` : "",
-      d.resultMsg || d.returnAuthMsg || "",
-      d.returnReasonCode ? `reason=${d.returnReasonCode}` : ""
+      resultCode ? `resultCode=${resultCode}` : "",
+      d.resultMsg || d.returnAuthMsg || ""
     ].filter(Boolean).join(" · ");
 
     return detail
