@@ -5,6 +5,7 @@ import { readTrafficCache, writeTrafficCache } from "../lib/trafficCache.js";
 const CACHE_TTL_SECONDS = 300;
 const SOURCE_CACHE_TTL_SECONDS = 300;
 const SLOWEST_LIMIT = 30;
+const SNAPSHOT_KEY = "traffic:busan:latest";
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -79,32 +80,25 @@ export async function onRequestGet(context) {
     let source = null;
     let cacheState = "MISS";
 
-    stage = "cache-read";
-    if (!forceRefresh) {
-      try {
-        source = await readTrafficCache(context.request);
-        if (source) {
-          cacheState = "HIT";
-        }
-      } catch (cacheError) {
-        // Cache API 오류가 실시간 교통 조회 전체를 막지 않도록 무시합니다.
-        source = null;
+    // 사용자 요청에서는 부산 원본 API를 호출하지 않습니다.
+    // 배경 수집기가 KV에 저장한 최신 스냅샷만 읽습니다.
+    if (context.env.TRAFFIC_CACHE) {
+      stage = "snapshot-read";
+      const snapshot = await context.env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json");
+      if (snapshot && Array.isArray(snapshot.rows)) {
+        source = snapshot;
+        cacheState = "SNAPSHOT";
       }
     }
 
     if (!source) {
-      stage = "upstream-fetch";
-      source = await fetchBusanTraffic(context);
-      cacheState = "MISS";
-      stage = "cache-write";
-      try {
-        context.waitUntil(
-          writeTrafficCache(context.request, source, SOURCE_CACHE_TTL_SECONDS)
-            .catch(() => undefined)
-        );
-      } catch {
-        // Cache API를 사용할 수 없는 런타임에서도 데이터 응답은 계속합니다.
-      }
+      return json({
+        ok: false,
+        error: "최신 부산 교통 스냅샷이 아직 준비되지 않았습니다.",
+        diagnostics: {
+          code: "TRAFFIC_SNAPSHOT_NOT_READY"
+        }
+      }, 503);
     }
 
     stage = "region-filter";
