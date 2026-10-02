@@ -140,7 +140,12 @@ async function loadTraffic(regionKey, forceRefresh = false) {
     const payload = await response.json();
 
     if (!response.ok || !payload.ok) {
-      setErrorDetail(classifyApiError(response, payload));
+      const diagnostic = payload?.diagnostics?.detail || payload?.diagnostics?.body || "";
+      setErrorDetail(
+        [classifyApiError(response, payload), diagnostic]
+          .filter(Boolean)
+          .join(" · ")
+      );
       throw new Error(payload.error || "교통정보 조회에 실패했습니다.");
     }
 
@@ -154,7 +159,8 @@ async function loadTraffic(regionKey, forceRefresh = false) {
       : "";
 
     message.textContent =
-      `부산시 실시간 교통 데이터 기반 · 북구 필터 결과 ${state.rows.length}건 · 캐시 ${cacheState}${timingText}`;
+      `부산시 실시간 교통 데이터 기반 · 북구 필터 결과 ${state.rows.length}건 · 캐시 ${cacheState}${timingText}`
+      + (payload.cacheWarning ? " · 캐시 저장 경고" : "");
 
     setErrorDetail("");
     setStatus("정상", true);
