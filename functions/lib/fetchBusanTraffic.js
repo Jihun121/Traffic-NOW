@@ -1,6 +1,6 @@
 import { normalizeTrafficPayload } from "./normalizeTraffic.js";
 
-const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_TIMEOUT_MS = 12000;
 const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 
 function getApiKey(env) {
@@ -79,13 +79,13 @@ export class BusanTrafficError extends Error {
   }
 }
 
-export async function fetchBusanTraffic(context) {
-  const rawUrl = String(context.env.BUSAN_TRAFFIC_API_URL || DEFAULT_API_URL).trim();
-  const apiKey = getApiKey(context.env);
+export async function fetchBusanTraffic(context, options = {}) {
+  const rawUrl = String(context.env?.BUSAN_TRAFFIC_API_URL || DEFAULT_API_URL).trim();
+  const apiKey = getApiKey(context.env || {});
 
   if (!apiKey && !/[?&](serviceKey|apiKey)=/i.test(rawUrl)) {
     throw new BusanTrafficError(
-      "부산 교통 API 인증키가 설정되어 있지 않습니다. BUSAN_TRAFFIC_API_KEY 또는 BUSAN_API_KEY를 확인하세요.",
+      "부산 교통 API 인증키가 설정되어 있지 않습니다. BUSAN_TRAFFIC_API_KEY 환경 변수를 확인하세요.",
       500,
       "BUSAN_TRAFFIC_API_KEY_MISSING"
     );
@@ -103,15 +103,38 @@ export async function fetchBusanTraffic(context) {
     );
   }
 
-  const timeoutMs = Number(context.env.BUSAN_TRAFFIC_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
+  const timeoutMs = Number(context.env?.BUSAN_TRAFFIC_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
   const startedAt = Date.now();
+  const maxPages = Number(options.maxPages || 1); // 기본 1페이지만 빠르게 수집하여 온디맨드 타임아웃 방지
 
   async function requestPage(pageNo) {
     const pageUrl = new URL(apiUrl);
     pageUrl.searchParams.set("pageNo", String(pageNo));
     pageUrl.searchParams.set("numOfRows", "1000");
 
-    const response = await fetchWithTimeout(pageUrl.toString(), timeoutMs);
+    let response;
+    try {
+      response = await fetchWithTimeout(pageUrl.toString(), timeoutMs);
+    } catch (err) {
+      const isTimeout = err?.name === "AbortError";
+      const elapsedMs = Date.now() - startedAt;
+      throw new BusanTrafficError(
+        isTimeout
+          ? `부산시 공공데이터 API 응답 시간 초과 (제한: ${timeoutMs}ms, 소요: ${elapsedMs}ms)`
+          : `부산시 공공데이터 API 네트워크 연결 실패: ${err?.message || err}`,
+        isTimeout ? 504 : 502,
+        isTimeout ? "BUSAN_TRAFFIC_UPSTREAM_TIMEOUT" : "BUSAN_TRAFFIC_UPSTREAM_CONNECTION_ERROR",
+        {
+          endpoint: sanitizeUrlForDiagnostics(pageUrl.toString()),
+          elapsedMs,
+          timeoutLimitMs: timeoutMs,
+          pageNo,
+          reason: isTimeout ? "UPSTREAM_TIMEOUT" : "CONNECTION_ERROR",
+          detail: err instanceof Error ? err.message : String(err)
+        }
+      );
+    }
+
     const elapsedMs = Date.now() - startedAt;
     const rawText = await response.text();
 
@@ -166,7 +189,7 @@ export async function fetchBusanTraffic(context) {
 
     if (resultCode && resultCode !== "00" && resultCode !== "0") {
       throw new BusanTrafficError(
-        "부산시 교통 API가 오류를 반환했습니다.",
+        `부산시 교통 API 오류 응답 (코드: ${resultCode}): ${resultMsg || returnAuthMsg || "인증키 또는 파라미터를 확인하세요"}`,
         502,
         "BUSAN_TRAFFIC_API_RESULT_ERROR",
         {
@@ -187,67 +210,41 @@ export async function fetchBusanTraffic(context) {
     };
   }
 
-  try {
-    const first = await requestPage(1);
-    const content = first.payload?.content || {};
-    const totalCount = Number(content?.totalCount ?? 0);
-    const pageSize = 1000;
-    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const first = await requestPage(1);
+  const content = first.payload?.content || {};
+  const totalCount = Number(content?.totalCount ?? 0);
+  const totalPages = Math.max(1, Math.ceil(totalCount / 1000));
+  const responses = [first.payload];
 
-    const responses = [first.payload];
-
-    // 북구 테스트에 필요한 데이터가 첫 페이지에 없을 수 있으므로
-    // 전체 링크를 가져오되, 동시 요청은 4개씩만 실행합니다.
-    if (totalPages > 1) {
-      for (let page = 2; page <= totalPages; page += 4) {
-        const pageNumbers = [];
-        for (let n = page; n < page + 4 && n <= totalPages; n += 1) {
-          pageNumbers.push(n);
-        }
-
-        const batch = await Promise.all(pageNumbers.map(requestPage));
-        responses.push(...batch.map((item) => item.payload));
+  // maxPages 제한이 1보다 크고 totalPages가 여러 개일 때만 추가 페이지 수집
+  if (maxPages > 1 && totalPages > 1) {
+    const targetPages = Math.min(maxPages, totalPages);
+    for (let page = 2; page <= targetPages; page += 4) {
+      const pageNumbers = [];
+      for (let n = page; n < page + 4 && n <= targetPages; n += 1) {
+        pageNumbers.push(n);
       }
+      const batch = await Promise.all(pageNumbers.map(requestPage));
+      responses.push(...batch.map((item) => item.payload));
     }
-
-    const rawItems = responses.flatMap((payload) =>
-      Array.isArray(payload?.content?.items) ? payload.content.items : []
-    );
-
-    const normalized = normalizeTrafficPayload({
-      totalCount,
-      content: {
-        totalCount,
-        items: rawItems
-      }
-    });
-
-    return {
-      ...normalized,
-      fetchedAt: new Date().toISOString(),
-      upstreamMs: Date.now() - startedAt,
-      pageCount: totalPages
-    };
-  } catch (error) {
-    if (error instanceof BusanTrafficError) {
-      throw error;
-    }
-
-    const elapsedMs = Date.now() - startedAt;
-    const isTimeout = error?.name === "AbortError";
-
-    throw new BusanTrafficError(
-      isTimeout
-        ? "부산시 교통 API 응답 시간 초과 (" + timeoutMs + "ms)"
-        : "부산시 교통 API에 연결할 수 없습니다.",
-      isTimeout ? 503 : 502,
-      isTimeout ? "BUSAN_TRAFFIC_UPSTREAM_TIMEOUT" : "BUSAN_TRAFFIC_UPSTREAM_CONNECTION_ERROR",
-      {
-        endpoint: sanitizeUrlForDiagnostics(apiUrl.toString()),
-        elapsedMs,
-        reason: isTimeout ? "UPSTREAM_TIMEOUT" : "UPSTREAM_CONNECTION_ERROR",
-        detail: error instanceof Error ? error.message : String(error)
-      }
-    );
   }
+
+  const rawItems = responses.flatMap((payload) =>
+    Array.isArray(payload?.content?.items) ? payload.content.items : []
+  );
+
+  const normalized = normalizeTrafficPayload({
+    totalCount,
+    content: {
+      totalCount,
+      items: rawItems
+    }
+  });
+
+  return {
+    ...normalized,
+    fetchedAt: new Date().toISOString(),
+    upstreamMs: Date.now() - startedAt,
+    pageCount: responses.length
+  };
 }

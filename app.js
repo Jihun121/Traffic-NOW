@@ -189,7 +189,63 @@ function renderTable() {
   resultCountLabel.textContent = `조회 결과: ${filtered.length.toLocaleString("ko-KR")}건 (최대 100건 표시)`;
 }
 
-// 4. API 호출 및 데이터 로드
+// 4. API 에러 원인 정밀 진단 함수
+function diagnoseTrafficError(response, payload, rawText = "") {
+  const status = response?.status;
+  const diag = payload?.diagnostics || {};
+  const code = diag.code || "";
+  const detail = diag.detail || payload?.error || "";
+
+  // 1) 명확한 타임아웃 판정
+  const isTimeout =
+    status === 504 ||
+    status === 524 ||
+    code === "BUSAN_TRAFFIC_UPSTREAM_TIMEOUT" ||
+    /timeout|시간 초과|timed out|abort/i.test(detail);
+
+  if (isTimeout) {
+    return {
+      isTimeout: true,
+      title: "⏱️ 공공데이터 API 응답 시간 초과 (Timeout)",
+      message: "부산시 공공데이터포털 서버의 응답이 지연되어 시간 초과가 발생했습니다.",
+      detail: detail || "12초 내에 공공데이터포털이 응답하지 못했습니다.",
+      tip: "대책: Cloudflare의 TRAFFIC_CACHE KV가 바인딩되어 있는지 확인하고, 백그라운드 수집기 Worker를 먼저 1회 실행하면 지연 없이 즉시 조회됩니다."
+    };
+  }
+
+  // 2) API 키 미설정 판정
+  if (code === "BUSAN_TRAFFIC_API_KEY_MISSING" || !diag.hasBusanKey) {
+    return {
+      isTimeout: false,
+      title: "🔑 API 인증키 누락",
+      message: "Cloudflare 대시보드에 BUSAN_TRAFFIC_API_KEY 환경변수가 설정되지 않았습니다.",
+      detail: detail,
+      tip: "Cloudflare Pages > Settings > Environment variables에 키를 추가하세요."
+    };
+  }
+
+  // 3) 공공데이터포털 인증/권한 에러
+  if (code === "BUSAN_TRAFFIC_API_RESULT_ERROR") {
+    return {
+      isTimeout: false,
+      title: "🚫 공공데이터포털 인증 오류",
+      message: detail || "공공데이터 서비스키 승인 상태 또는 사용기간을 확인하세요.",
+      detail: `resultCode: ${diag.resultCode || "알 수 없음"}`,
+      tip: "공공데이터포털(data.go.kr)에서 '부산광역시_링크소통정보' 활용신청이 승인 상태인지 확인하세요."
+    };
+  }
+
+  // 4) 일반 HTTP 오류
+  return {
+    isTimeout: false,
+    title: `⚠️ 서버 오류 (HTTP ${status || "알 수 없음"})`,
+    message: detail || "교통정보 수집에 실패했습니다.",
+    detail: rawText.slice(0, 200) || JSON.stringify(diag),
+    tip: "잠시 후 새로고침을 시도해 주세요."
+  };
+}
+
+// 5. API 호출 및 데이터 로드
 async function loadTraffic(regionKey = "busan", forceRefresh = false) {
   if (state.loading) return;
 
@@ -201,13 +257,41 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
   const params = new URLSearchParams({ region: regionKey });
   if (forceRefresh) params.set("forceRefresh", "1");
 
-  try {
-    const response = await fetch(`/api/traffic?${params.toString()}`);
-    const payload = await response.json();
+  // 클라이언트 단에서도 최대 20초 후 자동 중단 방지 컨트롤러
+  const abortCtrl = new AbortController();
+  const timer = setTimeout(() => abortCtrl.abort(), 20000);
 
-    if (!response.ok || !payload.ok) {
-      const err = payload?.error || "교통정보 수집에 실패했습니다.";
-      throw new Error(err);
+  try {
+    let response;
+    let payload = null;
+    let rawText = "";
+
+    try {
+      response = await fetch(`/api/traffic?${params.toString()}`, {
+        signal: abortCtrl.signal
+      });
+      rawText = await response.text();
+      payload = JSON.parse(rawText);
+    } catch (fetchErr) {
+      const isClientTimeout = fetchErr.name === "AbortError";
+      const errorDiag = {
+        isTimeout: isClientTimeout,
+        title: isClientTimeout ? "⏱️ 브라우저 요청 시간 초과 (Client Timeout)" : "네트워크 오류",
+        message: isClientTimeout
+          ? "서버 응답이 20초 이상 지연되어 연결이 중단되었습니다."
+          : (fetchErr.message || "서버와 연결할 수 없습니다."),
+        detail: isClientTimeout ? "Cloudflare Pages Function 응답 지연" : String(fetchErr),
+        tip: "공공데이터포털 트래픽 지연 또는 Cloudflare 연결을 확인하세요."
+      };
+      displayError(errorDiag);
+      throw new Error(errorDiag.message);
+    }
+
+    if (!response.ok || !payload || !payload.ok) {
+      const errorDiag = diagnoseTrafficError(response, payload, rawText);
+      displayError(errorDiag);
+      console.error("[Traffic API Error Diagnosis]:", errorDiag, { response, payload });
+      throw new Error(errorDiag.message);
     }
 
     state.rawData = Array.isArray(payload.data) ? payload.data : [];
@@ -224,12 +308,20 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     setStatus("실시간 동기화 완료", true);
     if (errorDetail) errorDetail.textContent = "";
   } catch (error) {
-    console.error("Traffic Load Error:", error);
-    statusMessage.textContent = `오류 발생: ${error.message}`;
     setStatus("연결 실패", false);
-    if (errorDetail) errorDetail.textContent = `상세 에러: ${error.message}`;
   } finally {
+    clearTimeout(timer);
     state.loading = false;
+  }
+}
+
+function displayError(diag) {
+  statusMessage.textContent = `${diag.title}: ${diag.message}`;
+  if (errorDetail) {
+    errorDetail.innerHTML = `
+      <strong>[원인 분석]:</strong> ${escapeHtml(diag.detail)}<br/>
+      <strong>[해결 가이드]:</strong> ${escapeHtml(diag.tip)}
+    `;
   }
 }
 

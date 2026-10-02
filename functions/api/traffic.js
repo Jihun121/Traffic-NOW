@@ -4,7 +4,7 @@ import {
   getCongestionTop10,
   enrichRowsWithTrafficAnalysis
 } from "../lib/trafficAnalyzer.js";
-import { fetchBusanTraffic } from "../lib/fetchBusanTraffic.js";
+import { fetchBusanTraffic, BusanTrafficError } from "../lib/fetchBusanTraffic.js";
 import { fetchItsTraffic } from "../lib/fetchItsTraffic.js";
 
 const SNAPSHOT_RESPONSE_TTL_SECONDS = 30;
@@ -23,13 +23,14 @@ function json(data, status = 200, extraHeaders = {}) {
 
 /**
  * KV 스냅샷이 없을 경우 온디맨드로 데이터를 수집 및 분석하여 KV에 캐싱
+ * (타임아웃 방지를 위해 maxPages: 1 로 경량 호출)
  */
 async function fallbackOnDemandFetch(context) {
-  // 1. 부산 데이터 수집
-  const busanResult = await fetchBusanTraffic(context);
+  // 1. 부산 데이터 수집 (Fast Path: 1페이지만 우선 수집하여 타임아웃 방지)
+  const busanResult = await fetchBusanTraffic(context, { maxPages: 1 });
   let rows = busanResult?.rows || [];
 
-  // 2. ITS 데이터 수집 시도 (실패해도 부산 데이터로 유지)
+  // 2. ITS 데이터 수집 시도 (실패해도 무시하고 부산 데이터로 진행)
   try {
     const itsResult = await fetchItsTraffic(context);
     if (itsResult.ok && Array.isArray(itsResult.items) && itsResult.items.length > 0) {
@@ -127,7 +128,7 @@ export async function onRequestGet(context) {
       },
       stats,
       top10,
-      data: sortedFiltered.slice(0, 100), // 선택 지역의 도로 최대 100개
+      data: sortedFiltered.slice(0, 100),
       filteredCount: filteredRows.length,
       totalCount: allRows.length,
       updatedAt: source.fetchedAt || new Date().toISOString(),
@@ -143,15 +144,23 @@ export async function onRequestGet(context) {
       "X-Traffic-Source": "BUSAN+ITS"
     });
   } catch (error) {
+    const isBusanError = error instanceof BusanTrafficError;
+    const status = isBusanError ? (error.status || 502) : 500;
+    const code = isBusanError ? error.code : "TRAFFIC_INTERNAL_ERROR";
+    const message = error instanceof Error ? error.message : String(error);
+
     return json({
       ok: false,
-      error: "교통정보 처리 중 서버 오류가 발생했습니다.",
+      error: message,
       diagnostics: {
-        code: "TRAFFIC_INTERNAL_ERROR",
-        detail: error instanceof Error ? error.message : String(error),
+        code,
         stage,
-        name: error?.name || "UnknownError"
+        detail: message,
+        name: error?.name || "UnknownError",
+        ...(isBusanError ? error.diagnostics : {}),
+        hasKvBinding: Boolean(context.env?.TRAFFIC_CACHE),
+        hasBusanKey: Boolean(context.env?.BUSAN_TRAFFIC_API_KEY || context.env?.BUSAN_API_KEY)
       }
-    }, 500);
+    }, status);
   }
 }
