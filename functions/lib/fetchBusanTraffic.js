@@ -1,6 +1,6 @@
 import { normalizeTrafficPayload } from "./normalizeTraffic.js";
 
-const DEFAULT_TIMEOUT_MS = 12000;
+const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 
 function getApiKey(env) {
@@ -110,7 +110,8 @@ export async function fetchBusanTraffic(context, options = {}) {
   async function requestPage(pageNo) {
     const pageUrl = new URL(apiUrl);
     pageUrl.searchParams.set("pageNo", String(pageNo));
-    pageUrl.searchParams.set("numOfRows", "1000");
+    const requestedRows = String(options.pageSize || (maxPages === 1 ? 300 : 1000));
+    pageUrl.searchParams.set("numOfRows", requestedRows);
 
     let response;
     try {
