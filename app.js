@@ -31,10 +31,42 @@ const message = document.querySelector("#message");
 const statusDot = document.querySelector("#statusDot");
 const statusText = document.querySelector("#statusText");
 const refreshButton = document.querySelector("#refreshButton");
+const errorDetail = document.querySelector("#errorDetail");
 
 function setStatus(text, active = false) {
   statusText.textContent = text;
   statusDot.style.background = active ? "#1c9b62" : "#a7b0c2";
+}
+
+function setErrorDetail(text = "") {
+  if (errorDetail) errorDetail.textContent = text;
+}
+
+function classifyApiError(response, payload) {
+  const diagnostics = payload?.diagnostics;
+  const upstreamStatus = diagnostics?.status;
+
+  if (upstreamStatus === 522 || String(payload?.error || "").includes("522")) {
+    return "ITS 서버 연결 시간 초과(522) · 사용량 부족보다는 API 서버/네트워크 연결 문제일 가능성이 큽니다.";
+  }
+
+  if (upstreamStatus === 401 || upstreamStatus === 403) {
+    return "ITS 인증 오류 · API 키 또는 사용처/권한 설정을 확인하세요.";
+  }
+
+  if (upstreamStatus === 429) {
+    return "ITS 요청 제한(429) · 호출 한도 또는 순간 요청량을 확인하세요.";
+  }
+
+  if (response?.status === 502) {
+    return "ITS API 연결 실패 · 외부 API 서버 응답 상태를 확인하는 중입니다.";
+  }
+
+  if (response?.status === 500) {
+    return "서버 설정 오류 · Cloudflare의 ITS_API_KEY Secret 설정을 확인하세요.";
+  }
+
+  return payload?.error || "교통정보 조회에 실패했습니다.";
 }
 
 function formatNumber(value, digits = 0) {
@@ -128,6 +160,7 @@ async function loadTraffic(regionKey) {
     const payload = await response.json();
 
     if (!response.ok || !payload.ok) {
+      setErrorDetail(classifyApiError(response, payload));
       throw new Error(payload.error || "교통정보 조회에 실패했습니다.");
     }
 
