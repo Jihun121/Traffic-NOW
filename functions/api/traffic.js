@@ -1,4 +1,4 @@
-const ITS_ENDPOINT = "https://openapi.its.go.kr:9443/trafficInfo";
+const ITS_ENDPOINT = "https://openapi.its.go.kr/trafficInfo";
 
 const MAX_SPAN_X = 0.6;
 const MAX_SPAN_Y = 0.5;
