@@ -1,17 +1,18 @@
-const ITS_ENDPOINTS = [
-  "http://openapi.its.go.kr/trafficInfo",
-  "https://openapi.its.go.kr:9443/trafficInfo"
-];
+const ITS_ENDPOINT = "http://openapi.its.go.kr/trafficInfo";
 
-const MAX_SPAN_X = 0.6;
-const MAX_SPAN_Y = 0.5;
+const CACHE_TTL_SECONDS = 15;
+const UPSTREAM_TIMEOUT_MS = 8000;
+const MAX_SPAN_X = 0.18;
+const MAX_SPAN_Y = 0.18;
+const SLOWEST_LIMIT = 30;
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=UTF-8",
-      "cache-control": "no-store"
+      "cache-control": "no-store",
+      ...extraHeaders
     }
   });
 }
@@ -35,16 +36,12 @@ function readTag(block, tag) {
   const close = "</" + tag + ">";
   const start = block.indexOf(open);
 
-  if (start < 0) {
-    return "";
-  }
+  if (start < 0) return "";
 
   const valueStart = start + open.length;
   const end = block.indexOf(close, valueStart);
 
-  if (end < 0) {
-    return "";
-  }
+  if (end < 0) return "";
 
   return decodeXml(block.slice(valueStart, end).trim());
 }
@@ -53,56 +50,93 @@ function parseTrafficXml(xml) {
   const source = String(xml);
   const items = [];
   let cursor = 0;
+  let totalCount = null;
+  let validSpeedCount = 0;
+  let speedSum = 0;
+  let latestCreatedDate = "";
+
+  const reportedTotal = readTag(source, "totalCount");
+  if (reportedTotal) {
+    const parsedTotal = Number(reportedTotal);
+    if (Number.isFinite(parsedTotal)) {
+      totalCount = parsedTotal;
+    }
+  }
 
   while (true) {
     const start = source.indexOf("<item>", cursor);
-
-    if (start < 0) {
-      break;
-    }
+    if (start < 0) break;
 
     const valueStart = start + "<item>".length;
     const end = source.indexOf("</item>", valueStart);
-
-    if (end < 0) {
-      break;
-    }
+    if (end < 0) break;
 
     const block = source.slice(valueStart, end);
+    const speed = Number(readTag(block, "speed"));
+
+    if (Number.isFinite(speed) && speed >= 0) {
+      validSpeedCount += 1;
+      speedSum += speed;
+    }
+
+    const createdDate = readTag(block, "createdDate");
+    if (createdDate > latestCreatedDate) {
+      latestCreatedDate = createdDate;
+    }
 
     items.push({
       roadName: readTag(block, "roadName"),
-      roadDrcType: readTag(block, "drcType"),
-      linkNo: readTag(block, "linkNo"),
       linkId: readTag(block, "linkId"),
-      startNodeId: readTag(block, "startNodeId"),
-      endNodeId: readTag(block, "endNodeId"),
-      speed: Number(readTag(block, "speed")),
-      travelTime: Number(readTag(block, "travelTime")),
-      createdDate: readTag(block, "createdDate")
+      speed,
+      travelTime: Number(readTag(block, "travelTime"))
     });
 
     cursor = end + "</item>".length;
   }
 
-  return items;
-}
+  const validItems = items
+    .filter(item => item.linkId || item.roadName)
+    .filter(item => Number.isFinite(item.speed) && item.speed >= 0);
 
-function normalizeItem(item) {
+  validItems.sort((a, b) => a.speed - b.speed);
+
   return {
-    roadName: String(item?.roadName ?? ""),
-    roadDrcType: String(item?.roadDrcType ?? ""),
-    linkNo: String(item?.linkNo ?? ""),
-    linkId: String(item?.linkId ?? ""),
-    startNodeId: String(item?.startNodeId ?? ""),
-    endNodeId: String(item?.endNodeId ?? ""),
-    speed: Number(item?.speed),
-    travelTime: Number(item?.travelTime),
-    createdDate: String(item?.createdDate ?? "")
+    count: totalCount ?? items.length,
+    averageSpeed: validSpeedCount
+      ? Number((speedSum / validSpeedCount).toFixed(1))
+      : null,
+    updatedAt: latestCreatedDate,
+    slowest: validItems.slice(0, SLOWEST_LIMIT)
   };
 }
 
+function createCacheKey(requestUrl) {
+  const cacheUrl = new URL(requestUrl.origin + requestUrl.pathname);
+  cacheUrl.pathname = "/api/traffic-cache";
+  cacheUrl.searchParams.set("minX", requestUrl.searchParams.get("minX"));
+  cacheUrl.searchParams.set("maxX", requestUrl.searchParams.get("maxX"));
+  cacheUrl.searchParams.set("minY", requestUrl.searchParams.get("minY"));
+  cacheUrl.searchParams.set("maxY", requestUrl.searchParams.get("maxY"));
+  cacheUrl.searchParams.set("v", "3");
+  return new Request(cacheUrl.toString(), { method: "GET" });
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export async function onRequestGet(context) {
+  const startedAt = Date.now();
   const apiKey = String(context.env.ITS_API_KEY || "").trim();
 
   if (!apiKey) {
@@ -136,63 +170,110 @@ export async function onRequestGet(context) {
   if (maxX - minX > MAX_SPAN_X || maxY - minY > MAX_SPAN_Y) {
     return json({
       ok: false,
-      error: "조회 영역이 너무 큽니다. 지도를 확대하거나 더 작은 영역으로 조회해주세요."
+      error: "조회 영역이 너무 큽니다. 더 작은 영역으로 조회해주세요.",
+      limits: {
+        maxSpanX: MAX_SPAN_X,
+        maxSpanY: MAX_SPAN_Y
+      }
     }, 400);
   }
 
-  let lastFailure = null;
+  const cache = caches.default;
+  const cacheKey = createCacheKey(requestUrl);
+  const cached = await cache.match(cacheKey);
 
-  for (const endpoint of ITS_ENDPOINTS) {
-    const apiUrl = new URL(endpoint);
-
-    apiUrl.searchParams.set("apiKey", apiKey);
-    apiUrl.searchParams.set("type", "all");
-    apiUrl.searchParams.set("minX", String(minX));
-    apiUrl.searchParams.set("maxX", String(maxX));
-    apiUrl.searchParams.set("minY", String(minY));
-    apiUrl.searchParams.set("maxY", String(maxY));
-    apiUrl.searchParams.set("getType", "xml");
-
-    try {
-      const response = await fetch(apiUrl.toString(), {
-        headers: {
-          accept: "application/xml, text/xml"
-        }
-      });
-
-      const rawText = await response.text();
-
-      if (!response.ok) {
-        lastFailure = {
-          endpoint,
-          status: response.status,
-          body: rawText.slice(0, 500)
-        };
-        continue;
-      }
-
-      const data = parseTrafficXml(rawText)
-        .map(normalizeItem)
-        .filter(item => item.linkId || item.roadName);
-
-      return json({
-        ok: true,
-        count: data.length,
-        data
-      });
-    } catch (error) {
-      lastFailure = {
-        endpoint,
-        error: error instanceof Error
-          ? error.message
-          : "알 수 없는 네트워크 오류"
-      };
-    }
+  if (cached) {
+    const response = new Response(cached.body, cached);
+    response.headers.set("X-Traffic-Cache", "HIT");
+    response.headers.set("X-Traffic-Response-Ms", String(Date.now() - startedAt));
+    return response;
   }
 
-  return json({
-    ok: false,
-    error: "ITS API에 연결할 수 없습니다. 모든 공식 접속 경로에서 응답을 받지 못했습니다.",
-    diagnostics: lastFailure
-  }, 502);
+  const apiUrl = new URL(ITS_ENDPOINT);
+  apiUrl.searchParams.set("apiKey", apiKey);
+  apiUrl.searchParams.set("type", "all");
+  apiUrl.searchParams.set("minX", String(minX));
+  apiUrl.searchParams.set("maxX", String(maxX));
+  apiUrl.searchParams.set("minY", String(minY));
+  apiUrl.searchParams.set("maxY", String(maxY));
+  apiUrl.searchParams.set("getType", "xml");
+
+  const upstreamStartedAt = Date.now();
+
+  try {
+    const response = await fetchWithTimeout(apiUrl.toString(), {
+      headers: {
+        accept: "application/xml, text/xml"
+      }
+    });
+
+    const upstreamMs = Date.now() - upstreamStartedAt;
+    const rawText = await response.text();
+
+    if (!response.ok) {
+      const body = rawText.slice(0, 500);
+
+      return json({
+        ok: false,
+        error: \`ITS API HTTP 오류: \${response.status}\`,
+        diagnostics: {
+          endpoint: ITS_ENDPOINT,
+          status: response.status,
+          upstreamMs,
+          body
+        }
+      }, 502);
+    }
+
+    const parseStartedAt = Date.now();
+    const summary = parseTrafficXml(rawText);
+    const parseMs = Date.now() - parseStartedAt;
+    const totalMs = Date.now() - startedAt;
+
+    const payload = {
+      ok: true,
+      count: summary.count,
+      averageSpeed: summary.averageSpeed,
+      updatedAt: summary.updatedAt,
+      data: summary.slowest,
+      timing: {
+        upstreamMs,
+        parseMs,
+        totalMs
+      }
+    };
+
+    const responseBody = JSON.stringify(payload);
+    const responseForClient = new Response(responseBody, {
+      status: 200,
+      headers: {
+        "content-type": "application/json; charset=UTF-8",
+        "cache-control": \`public, max-age=0, s-maxage=\${CACHE_TTL_SECONDS}\`,
+        "X-Traffic-Cache": "MISS",
+        "X-Traffic-Upstream-Ms": String(upstreamMs),
+        "X-Traffic-Parse-Ms": String(parseMs),
+        "X-Traffic-Response-Ms": String(totalMs)
+      }
+    });
+
+    context.waitUntil(cache.put(cacheKey, responseForClient.clone()));
+
+    return responseForClient;
+  } catch (error) {
+    const elapsedMs = Date.now() - startedAt;
+    const isTimeout = error?.name === "AbortError";
+
+    return json({
+      ok: false,
+      error: isTimeout
+        ? \`ITS API 응답 시간 초과 (\${UPSTREAM_TIMEOUT_MS}ms)\`
+        : "ITS API에 연결할 수 없습니다.",
+      diagnostics: {
+        endpoint: ITS_ENDPOINT,
+        elapsedMs,
+        reason: isTimeout ? "UPSTREAM_TIMEOUT" : "UPSTREAM_CONNECTION_ERROR",
+        detail: error instanceof Error ? error.message : String(error)
+      }
+    }, 502);
+  }
 }
