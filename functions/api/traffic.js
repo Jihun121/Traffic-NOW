@@ -1,7 +1,6 @@
 import { filterTrafficRegion, getTrafficRegion } from "../lib/filterTrafficRegion.js";
-import { readTrafficCache, writeTrafficCache } from "../lib/trafficCache.js";
 
-const CACHE_TTL_SECONDS = 300;
+const SNAPSHOT_RESPONSE_TTL_SECONDS = 30;
 const SLOWEST_LIMIT = 30;
 const SNAPSHOT_KEY = "traffic:busan:latest";
 
@@ -105,7 +104,7 @@ export async function onRequestGet(context) {
 
 
     return json(payload, 200, {
-      "cache-control": "public, max-age=0, s-maxage=" + CACHE_TTL_SECONDS,
+      "cache-control": "public, max-age=0, s-maxage=" + SNAPSHOT_RESPONSE_TTL_SECONDS,
       "X-Traffic-Cache": cacheState,
       "X-Traffic-Source": "BUSAN"
     });
