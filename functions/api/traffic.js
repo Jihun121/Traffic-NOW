@@ -215,7 +215,7 @@ export async function onRequestGet(context) {
 
       return json({
         ok: false,
-        error: `ITS API HTTP 오류: \${response.status}`,
+        error: "ITS API HTTP 오류: " + response.status,
         diagnostics: {
           endpoint: ITS_ENDPOINT,
           status: response.status,
@@ -248,7 +248,7 @@ export async function onRequestGet(context) {
       status: 200,
       headers: {
         "content-type": "application/json; charset=UTF-8",
-        "cache-control": `public, max-age=0, s-maxage=\${CACHE_TTL_SECONDS}`,
+        "cache-control": "public, max-age=0, s-maxage=" + CACHE_TTL_SECONDS,
         "X-Traffic-Cache": "MISS",
         "X-Traffic-Upstream-Ms": String(upstreamMs),
         "X-Traffic-Parse-Ms": String(parseMs),
@@ -266,7 +266,7 @@ export async function onRequestGet(context) {
     return json({
       ok: false,
       error: isTimeout
-        ? `ITS API 응답 시간 초과 (\${UPSTREAM_TIMEOUT_MS}ms)`
+        ? "ITS API 응답 시간 초과 (" + UPSTREAM_TIMEOUT_MS + "ms)"
         : "ITS API에 연결할 수 없습니다.",
       diagnostics: {
         endpoint: ITS_ENDPOINT,
