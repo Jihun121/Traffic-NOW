@@ -43,8 +43,12 @@ function classifyApiError(response, payload) {
     return "부산 교통 API 인증키가 설정되지 않았습니다. BUSAN_TRAFFIC_API_KEY 또는 BUSAN_API_KEY를 확인하세요.";
   }
 
+  if (code === "TRAFFIC_SNAPSHOT_NOT_READY") {
+    return "백그라운드 교통 데이터가 아직 준비되지 않았습니다. 수집기가 첫 부산 교통 데이터를 가져오는 중입니다.";
+  }
+
   if (code === "BUSAN_TRAFFIC_UPSTREAM_TIMEOUT") {
-    return "부산시 교통 API 응답 시간 초과 · 좌표 영역 조회가 아닌 부산시 데이터 API 자체의 응답 상태를 확인해야 합니다.";
+    return "부산시 교통 데이터 수집이 지연되고 있습니다. 사용자 화면은 원본 API를 직접 기다리지 않습니다.";
   }
 
   if (code === "BUSAN_TRAFFIC_API_RESULT_ERROR") {
@@ -209,8 +213,8 @@ document.querySelectorAll("[data-region]").forEach(button => {
 
 refreshButton.addEventListener("click", () => {
   if (state.regionKey) {
-    loadTraffic(state.regionKey, true);
+    loadTraffic(state.regionKey);
   } else {
-    loadTraffic("busan", true);
+    loadTraffic("busan");
   }
 });
