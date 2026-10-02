@@ -146,7 +146,24 @@ export async function fetchBusanTraffic(context) {
       );
     }
 
-    const resultCode = String(payload?.resultCode ?? payload?.result?.resultCode ?? "");
+    const header = payload?.OpenAPI_ServiceResponse?.cmmMsgHeader || {};
+    const resultCode = String(
+      payload?.resultCode ??
+      payload?.result?.resultCode ??
+      header.returnReasonCode ??
+      ""
+    );
+    const resultMsg =
+      payload?.resultMsg ??
+      payload?.result?.resultMsg ??
+      header.errMsg ??
+      "";
+    const returnAuthMsg =
+      payload?.returnAuthMsg ??
+      payload?.result?.returnAuthMsg ??
+      header.returnAuthMsg ??
+      "";
+
     if (resultCode && resultCode !== "00" && resultCode !== "0") {
       throw new BusanTrafficError(
         "부산시 교통 API가 오류를 반환했습니다.",
@@ -155,9 +172,9 @@ export async function fetchBusanTraffic(context) {
         {
           endpoint: sanitizeUrlForDiagnostics(pageUrl.toString()),
           resultCode,
-          resultMsg: payload?.resultMsg ?? payload?.result?.resultMsg ?? "",
-          returnReasonCode: payload?.returnReasonCode ?? payload?.result?.returnReasonCode ?? "",
-          returnAuthMsg: payload?.returnAuthMsg ?? payload?.result?.returnAuthMsg ?? "",
+          resultMsg,
+          returnReasonCode: header.returnReasonCode || payload?.returnReasonCode || "",
+          returnAuthMsg,
           responsePreview: JSON.stringify(payload).slice(0, 1200)
         }
       );
