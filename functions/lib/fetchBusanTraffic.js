@@ -155,7 +155,10 @@ export async function fetchBusanTraffic(context) {
         {
           endpoint: sanitizeUrlForDiagnostics(pageUrl.toString()),
           resultCode,
-          resultMsg: payload?.resultMsg ?? payload?.result?.resultMsg ?? ""
+          resultMsg: payload?.resultMsg ?? payload?.result?.resultMsg ?? "",
+          returnReasonCode: payload?.returnReasonCode ?? payload?.result?.returnReasonCode ?? "",
+          returnAuthMsg: payload?.returnAuthMsg ?? payload?.result?.returnAuthMsg ?? "",
+          responsePreview: JSON.stringify(payload).slice(0, 1200)
         }
       );
     }
