@@ -1,1 +1,198 @@
-const ITS_ENDPOINTS = [\n  "http://openapi.its.go.kr/trafficInfo",\n  "https://openapi.its.go.kr:9443/trafficInfo"\n];\n\nconst MAX_SPAN_X = 0.6;\nconst MAX_SPAN_Y = 0.5;\n\nfunction json(data, status = 200) {\n  return new Response(JSON.stringify(data), {\n    status,\n    headers: {\n      "content-type": "application/json; charset=UTF-8",\n      "cache-control": "no-store"\n    }\n  });\n}\n\nfunction getNumber(url, name) {\n  const value = Number(url.searchParams.get(name));\n  return Number.isFinite(value) ? value : null;\n}\n\nfunction decodeXml(value) {\n  return String(value ?? "")\n    .replaceAll("&amp;", "&")\n    .replaceAll("&lt;", "<")\n    .replaceAll("&gt;", ">")\n    .replaceAll("&quot;", """)\n    .replaceAll("&apos;", "'");\n}\n\nfunction readTag(block, tag) {\n  const open = "<" + tag + ">";\n  const close = "</" + tag + ">";\n  const start = String(block).indexOf(open);\n  if (start < 0) return "";\n\n  const valueStart = start + open.length;\n  const end = String(block).indexOf(close, valueStart);\n  if (end < 0) return "";\n\n  return decodeXml(String(block).slice(valueStart, end).trim());\n}\n\nfunction parseTrafficXml(xml) {\n  const source = String(xml);\n  const items = [];\n  let cursor = 0;\n\n  while (true) {\n    const start = source.indexOf("<item>", cursor);\n    if (start < 0) break;\n\n    const valueStart = start + "<item>".length;\n    const end = source.indexOf("</item>", valueStart);\n    if (end < 0) break;\n\n    const block = source.slice(valueStart, end);\n\n    items.push({\n      roadName: readTag(block, "roadName"),\n      roadDrcType: readTag(block, "drcType"),\n      linkNo: readTag(block, "linkNo"),\n      linkId: readTag(block, "linkId"),\n      startNodeId: readTag(block, "startNodeId"),\n      endNodeId: readTag(block, "endNodeId"),\n      speed: Number(readTag(block, "speed")),\n      travelTime: Number(readTag(block, "travelTime")),\n      createdDate: readTag(block, "createdDate")\n    });\n\n    cursor = end + "</item>".length;\n  }\n\n  return items;\n}\n\nfunction normalizeItem(item) {\n  return {\n    roadName: String(item?.roadName ?? ""),\n    roadDrcType: String(item?.roadDrcType ?? ""),\n    linkNo: String(item?.linkNo ?? ""),\n    linkId: String(item?.linkId ?? ""),\n    startNodeId: String(item?.startNodeId ?? ""),\n    endNodeId: String(item?.endNodeId ?? ""),\n    speed: Number(item?.speed),\n    travelTime: Number(item?.travelTime),\n    createdDate: String(item?.createdDate ?? "")\n  };\n}\n\nexport async function onRequestGet(context) {\n  const apiKey = String(context.env.ITS_API_KEY || "").trim();\n\n  if (!apiKey) {\n    return json({\n      ok: false,\n      error: "Cloudflare에 ITS_API_KEY Secret이 설정되어 있지 않습니다."\n    }, 500);\n  }\n\n  const requestUrl = new URL(context.request.url);\n  const minX = getNumber(requestUrl, "minX");\n  const maxX = getNumber(requestUrl, "maxX");\n  const minY = getNumber(requestUrl, "minY");\n  const maxY = getNumber(requestUrl, "maxY");\n\n  if ([minX, maxX, minY, maxY].some(value => value === null)) {\n    return json({\n      ok: false,\n      error: "minX, maxX, minY, maxY가 모두 필요합니다."\n    }, 400);\n  }\n\n  if (minX >= maxX || minY >= maxY) {\n    return json({\n      ok: false,\n      error: "좌표 범위가 올바르지 않습니다."\n    }, 400);\n  }\n\n  if (maxX - minX > MAX_SPAN_X || maxY - minY > MAX_SPAN_Y) {\n    return json({\n      ok: false,\n      error: "조회 영역이 너무 큽니다. 지도를 확대하거나 더 작은 영역으로 조회해주세요."\n    }, 400);\n  }\n\n  let lastFailure = null;\n\n  for (const endpoint of ITS_ENDPOINTS) {\n    const apiUrl = new URL(endpoint);\n    apiUrl.searchParams.set("apiKey", apiKey);\n    apiUrl.searchParams.set("type", "all");\n    apiUrl.searchParams.set("minX", String(minX));\n    apiUrl.searchParams.set("maxX", String(maxX));\n    apiUrl.searchParams.set("minY", String(minY));\n    apiUrl.searchParams.set("maxY", String(maxY));\n    apiUrl.searchParams.set("getType", "xml");\n\n    try {\n      const response = await fetch(apiUrl.toString(), {\n        headers: {\n          accept: "application/xml, text/xml"\n        }\n      });\n\n      const rawText = await response.text();\n\n      if (!response.ok) {\n        lastFailure = {\n          endpoint,\n          status: response.status,\n          body: rawText.slice(0, 500)\n        };\n        continue;\n      }\n\n      const data = parseTrafficXml(rawText)\n        .map(normalizeItem)\n        .filter(item => item.linkId || item.roadName);\n\n      return json({\n        ok: true,\n        count: data.length,\n        data\n      });\n    } catch (error) {\n      lastFailure = {\n        endpoint,\n        error: error instanceof Error\n          ? error.message\n          : "알 수 없는 네트워크 오류"\n      };\n    }\n  }\n\n  return json({\n    ok: false,\n    error: "ITS API에 연결할 수 없습니다. 모든 공식 접속 경로에서 응답을 받지 못했습니다.",\n    diagnostics: lastFailure\n  }, 502);\n}\n
+const ITS_ENDPOINTS = [
+  "http://openapi.its.go.kr/trafficInfo",
+  "https://openapi.its.go.kr:9443/trafficInfo"
+];
+
+const MAX_SPAN_X = 0.6;
+const MAX_SPAN_Y = 0.5;
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=UTF-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+function getNumber(url, name) {
+  const value = Number(url.searchParams.get(name));
+  return Number.isFinite(value) ? value : null;
+}
+
+function decodeXml(value) {
+  return String(value ?? "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'");
+}
+
+function readTag(block, tag) {
+  const open = "<" + tag + ">";
+  const close = "</" + tag + ">";
+  const start = block.indexOf(open);
+
+  if (start < 0) {
+    return "";
+  }
+
+  const valueStart = start + open.length;
+  const end = block.indexOf(close, valueStart);
+
+  if (end < 0) {
+    return "";
+  }
+
+  return decodeXml(block.slice(valueStart, end).trim());
+}
+
+function parseTrafficXml(xml) {
+  const source = String(xml);
+  const items = [];
+  let cursor = 0;
+
+  while (true) {
+    const start = source.indexOf("<item>", cursor);
+
+    if (start < 0) {
+      break;
+    }
+
+    const valueStart = start + "<item>".length;
+    const end = source.indexOf("</item>", valueStart);
+
+    if (end < 0) {
+      break;
+    }
+
+    const block = source.slice(valueStart, end);
+
+    items.push({
+      roadName: readTag(block, "roadName"),
+      roadDrcType: readTag(block, "drcType"),
+      linkNo: readTag(block, "linkNo"),
+      linkId: readTag(block, "linkId"),
+      startNodeId: readTag(block, "startNodeId"),
+      endNodeId: readTag(block, "endNodeId"),
+      speed: Number(readTag(block, "speed")),
+      travelTime: Number(readTag(block, "travelTime")),
+      createdDate: readTag(block, "createdDate")
+    });
+
+    cursor = end + "</item>".length;
+  }
+
+  return items;
+}
+
+function normalizeItem(item) {
+  return {
+    roadName: String(item?.roadName ?? ""),
+    roadDrcType: String(item?.roadDrcType ?? ""),
+    linkNo: String(item?.linkNo ?? ""),
+    linkId: String(item?.linkId ?? ""),
+    startNodeId: String(item?.startNodeId ?? ""),
+    endNodeId: String(item?.endNodeId ?? ""),
+    speed: Number(item?.speed),
+    travelTime: Number(item?.travelTime),
+    createdDate: String(item?.createdDate ?? "")
+  };
+}
+
+export async function onRequestGet(context) {
+  const apiKey = String(context.env.ITS_API_KEY || "").trim();
+
+  if (!apiKey) {
+    return json({
+      ok: false,
+      error: "Cloudflare에 ITS_API_KEY Secret이 설정되어 있지 않습니다."
+    }, 500);
+  }
+
+  const requestUrl = new URL(context.request.url);
+
+  const minX = getNumber(requestUrl, "minX");
+  const maxX = getNumber(requestUrl, "maxX");
+  const minY = getNumber(requestUrl, "minY");
+  const maxY = getNumber(requestUrl, "maxY");
+
+  if ([minX, maxX, minY, maxY].some(value => value === null)) {
+    return json({
+      ok: false,
+      error: "minX, maxX, minY, maxY가 모두 필요합니다."
+    }, 400);
+  }
+
+  if (minX >= maxX || minY >= maxY) {
+    return json({
+      ok: false,
+      error: "좌표 범위가 올바르지 않습니다."
+    }, 400);
+  }
+
+  if (maxX - minX > MAX_SPAN_X || maxY - minY > MAX_SPAN_Y) {
+    return json({
+      ok: false,
+      error: "조회 영역이 너무 큽니다. 지도를 확대하거나 더 작은 영역으로 조회해주세요."
+    }, 400);
+  }
+
+  let lastFailure = null;
+
+  for (const endpoint of ITS_ENDPOINTS) {
+    const apiUrl = new URL(endpoint);
+
+    apiUrl.searchParams.set("apiKey", apiKey);
+    apiUrl.searchParams.set("type", "all");
+    apiUrl.searchParams.set("minX", String(minX));
+    apiUrl.searchParams.set("maxX", String(maxX));
+    apiUrl.searchParams.set("minY", String(minY));
+    apiUrl.searchParams.set("maxY", String(maxY));
+    apiUrl.searchParams.set("getType", "xml");
+
+    try {
+      const response = await fetch(apiUrl.toString(), {
+        headers: {
+          accept: "application/xml, text/xml"
+        }
+      });
+
+      const rawText = await response.text();
+
+      if (!response.ok) {
+        lastFailure = {
+          endpoint,
+          status: response.status,
+          body: rawText.slice(0, 500)
+        };
+        continue;
+      }
+
+      const data = parseTrafficXml(rawText)
+        .map(normalizeItem)
+        .filter(item => item.linkId || item.roadName);
+
+      return json({
+        ok: true,
+        count: data.length,
+        data
+      });
+    } catch (error) {
+      lastFailure = {
+        endpoint,
+        error: error instanceof Error
+          ? error.message
+          : "알 수 없는 네트워크 오류"
+      };
+    }
+  }
+
+  return json({
+    ok: false,
+    error: "ITS API에 연결할 수 없습니다. 모든 공식 접속 경로에서 응답을 받지 못했습니다.",
+    diagnostics: lastFailure
+  }, 502);
+}
