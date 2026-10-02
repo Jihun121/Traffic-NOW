@@ -1,9 +1,7 @@
-import { fetchBusanTraffic, BusanTrafficError } from "../lib/fetchBusanTraffic.js";
 import { filterTrafficRegion, getTrafficRegion } from "../lib/filterTrafficRegion.js";
 import { readTrafficCache, writeTrafficCache } from "../lib/trafficCache.js";
 
 const CACHE_TTL_SECONDS = 300;
-const SOURCE_CACHE_TTL_SECONDS = 300;
 const SLOWEST_LIMIT = 30;
 const SNAPSHOT_KEY = "traffic:busan:latest";
 
@@ -66,7 +64,6 @@ export async function onRequestGet(context) {
   let stage = "start";
   const url = new URL(context.request.url);
   const regionKey = url.searchParams.get("region") || "busan-north-gu";
-  const forceRefresh = url.searchParams.get("forceRefresh") === "1";
 
   if (regionKey !== "busan-north-gu" && regionKey !== "busan") {
     return json({
@@ -113,17 +110,6 @@ export async function onRequestGet(context) {
       "X-Traffic-Source": "BUSAN"
     });
   } catch (error) {
-    if (error instanceof BusanTrafficError) {
-      return json({
-        ok: false,
-        error: error.message,
-        diagnostics: {
-          code: error.code,
-          ...(error.diagnostics || {})
-        }
-      }, error.status);
-    }
-
     return json({
       ok: false,
       error: "교통정보 처리 중 서버 오류가 발생했습니다.",
