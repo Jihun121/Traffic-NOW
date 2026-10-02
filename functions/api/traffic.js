@@ -92,13 +92,26 @@ export async function onRequestGet(context) {
       source = await fetchBusanTraffic(context);
       cacheState = "MISS";
       stage = "cache-write";
-      await writeTrafficCache(context.request, source, SOURCE_CACHE_TTL_SECONDS);
+      try {
+        await writeTrafficCache(context.request, source, SOURCE_CACHE_TTL_SECONDS);
+      } catch (cacheError) {
+        // 캐시 저장 실패는 실시간 데이터 응답 자체를 실패시키지 않습니다.
+        source = {
+          ...source,
+          cacheWarning: cacheError instanceof Error
+            ? cacheError.message
+            : String(cacheError)
+        };
+      }
     }
 
     stage = "region-filter";
     const filteredRows = filterTrafficRegion(source.rows || [], regionKey);
     stage = "payload-build";
     const payload = createPayload(regionKey, source, filteredRows, cacheState, startedAt);
+    if (source.cacheWarning) {
+      payload.cacheWarning = source.cacheWarning;
+    }
 
     return json(payload, 200, {
       "cache-control": "public, max-age=0, s-maxage=" + CACHE_TTL_SECONDS,
