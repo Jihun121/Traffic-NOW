@@ -1,4 +1,4 @@
-const ITS_ENDPOINT = "https://openapi.its.go.kr/trafficInfo";
+const ITS_ENDPOINT = "http://openapi.its.go.kr/trafficInfo";
 
 const MAX_SPAN_X = 0.6;
 const MAX_SPAN_Y = 0.5;
@@ -32,25 +32,41 @@ function normalizeItem(item) {
   };
 }
 
-function extractItems(payload) {
-  const candidates = [
-    payload?.response?.data,
-    payload?.response?.body?.items,
-    payload?.response?.body?.item,
-    payload?.body?.items,
-    payload?.items,
-    payload?.data
-  ];
+function decodeXml(value) {
+  return String(value ?? "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'");
+}
 
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate;
-    if (candidate && typeof candidate === "object") {
-      if (Array.isArray(candidate.item)) return candidate.item;
-      if (Array.isArray(candidate.items)) return candidate.items;
-    }
+function readTag(block, tag) {
+  const match = block.match(new RegExp("<" + tag + ">([\\s\\S]*?)<\\/" + tag + ">"));
+  return match ? decodeXml(match[1].trim()) : "";
+}
+
+function parseTrafficXml(xml) {
+  const items = [];
+  const itemMatches = String(xml).matchAll(/<item>([\\s\\S]*?)<\\/item>/g);
+
+  for (const match of itemMatches) {
+    const block = match[1];
+
+    items.push({
+      roadName: readTag(block, "roadName"),
+      roadDrcType: readTag(block, "drcType"),
+      linkNo: readTag(block, "linkNo"),
+      linkId: readTag(block, "linkId"),
+      startNodeId: readTag(block, "startNodeId"),
+      endNodeId: readTag(block, "endNodeId"),
+      speed: Number(readTag(block, "speed")),
+      travelTime: Number(readTag(block, "travelTime")),
+      createdDate: readTag(block, "createdDate")
+    });
   }
 
-  return [];
+  return items;
 }
 
 export async function onRequestGet(context) {
@@ -99,7 +115,7 @@ export async function onRequestGet(context) {
   apiUrl.searchParams.set("maxX", String(maxX));
   apiUrl.searchParams.set("minY", String(minY));
   apiUrl.searchParams.set("maxY", String(maxY));
-  apiUrl.searchParams.set("getType", "json");
+  apiUrl.searchParams.set("getType", "xml");
 
   try {
     const response = await fetch(apiUrl.toString(), {
@@ -108,25 +124,15 @@ export async function onRequestGet(context) {
 
     const rawText = await response.text();
 
-    let payload;
-    try {
-      payload = JSON.parse(rawText);
-    } catch {
-      return json({
-        ok: false,
-        error: `ITS API가 JSON이 아닌 응답을 반환했습니다. HTTP ${response.status}`
-      }, 502);
-    }
-
     if (!response.ok) {
       return json({
         ok: false,
         error: `ITS API HTTP 오류: ${response.status}`,
-        upstream: payload
+        upstream: rawText.slice(0, 1000)
       }, 502);
     }
 
-    const data = extractItems(payload)
+    const data = parseTrafficXml(rawText)
       .map(normalizeItem)
       .filter(item => item.linkId || item.roadName);
 
