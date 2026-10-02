@@ -1,10 +1,10 @@
 const REGIONS = {
   busan: {
     name: "부산",
-    minX: 128.90,
-    maxX: 129.30,
-    minY: 35.02,
-    maxY: 35.30
+    minX: 129.00,
+    maxX: 129.18,
+    minY: 35.05,
+    maxY: 35.23
   },
   seoul: {
     name: "서울",
@@ -98,29 +98,19 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function renderSummary(region, rows) {
+function renderSummary(region, rows, payload = {}) {
   regionName.textContent = region.name;
   linkCount.textContent = formatNumber(rows.length);
 
-  const speeds = rows
-    .map(row => Number(row.speed))
-    .filter(Number.isFinite)
-    .filter(speed => speed >= 0);
-
-  const average = speeds.length
-    ? speeds.reduce((sum, value) => sum + value, 0) / speeds.length
-    : NaN;
+  const average = Number(payload.averageSpeed);
 
   avgSpeed.textContent = Number.isFinite(average)
     ? `${average.toFixed(1)} km/h`
     : "-";
 
-  const dates = rows
-    .map(row => row.createdDate)
-    .filter(Boolean)
-    .sort();
-
-  updatedAt.textContent = dates.length ? formatApiDate(dates[dates.length - 1]) : "-";
+  updatedAt.textContent = payload.updatedAt
+    ? formatApiDate(payload.updatedAt)
+    : "-";
   resultCount.textContent = `${rows.length.toLocaleString("ko-KR")}건`;
 
   renderRows([...rows].sort((a, b) => Number(a.speed) - Number(b.speed)));
@@ -166,8 +156,13 @@ async function loadTraffic(regionKey) {
 
     state.rows = Array.isArray(payload.data) ? payload.data : [];
 
-    renderSummary(region, state.rows);
-    message.textContent = `조회 완료 · ${state.rows.length.toLocaleString("ko-KR")}개 도로 구간`;
+    renderSummary(region, state.rows, payload);
+
+    const cacheState = response.headers.get("X-Traffic-Cache") || "MISS";
+    const totalMs = payload.timing?.totalMs ?? response.headers.get("X-Traffic-Response-Ms");
+    const timingText = totalMs ? ` · 응답 ${Number(totalMs).toLocaleString("ko-KR")}ms` : "";
+    message.textContent = `조회 완료 · 전체 ${Number(payload.count ?? 0).toLocaleString("ko-KR")}개 구간 중 느린 구간 ${state.rows.length}개 표시 · 캐시 ${cacheState}${timingText}`;
+    setErrorDetail("");
     setStatus("정상", true);
   } catch (error) {
     state.rows = [];
