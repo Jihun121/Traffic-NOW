@@ -321,22 +321,15 @@ export default {
       if (!env.TRAFFIC_CACHE) throw new Error("TRAFFIC_CACHE KV binding is not configured.");
 
       // 1. 부산 데이터 수집
+      // Workers Free는 invocation당 외부 subrequest가 50건으로 제한되므로
+      // 전체 페이지를 순회하지 않고 1페이지만 수집한다.
+      // 매 10분마다 최신 표본을 교체하는 방식으로 API 호출량과 안정성을 우선한다.
       const first = await fetchBusanPage(busanApiKey, 1);
       const firstNormalized = normalizeTrafficPayload(first);
-      const totalCount = Number(firstNormalized.totalCount ?? 0);
-      const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+      const busanReportedTotalCount = Number(firstNormalized.totalCount ?? 0);
       const rows = normalizeBusanItems(first);
       const sourceParts = ["부산광역시 링크소통정보"];
       const warnings = [];
-
-      for (let start = 2; start <= totalPages; start += MAX_PARALLEL_PAGES) {
-        const pageNumbers = [];
-        for (let p = start; p < start + MAX_PARALLEL_PAGES && p <= totalPages; p++) {
-          pageNumbers.push(p);
-        }
-        const pages = await Promise.all(pageNumbers.map((no) => fetchBusanPage(busanApiKey, no)));
-        for (const p of pages) rows.push(...normalizeBusanItems(p));
-      }
 
       // 부산 API가 응답했지만 실제 유효 데이터가 0건이면
       // 기존 정상 스냅샷을 빈 데이터로 덮어쓰지 않는다.
@@ -407,7 +400,7 @@ export default {
         congestedRatio: stats.statusRatios.congested,
         source: snapshot.source,
         warning: snapshot.warning,
-        busanReportedTotalCount: totalCount,
+        busanReportedTotalCount,
         durationMs: Date.now() - startedAt
       });
     } catch (error) {
