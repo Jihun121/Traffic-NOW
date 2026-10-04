@@ -3,6 +3,7 @@
   "name": "traffic-now-worker",
   "main": "src/index.js",
   "compatibility_date": "2026-09-30",
+  "keep_vars": true,
   "triggers": {
     "crons": ["*/10 * * * *"]
   },
@@ -12,6 +13,12 @@
       "id": "0177091bb8fa45a8a5a23fb50230b84b"
     }
   ],
+  "secrets": {
+    "required": [
+      "BUSAN_TRAFFIC_API_KEY",
+      "ITS_API_KEY"
+    ]
+  },
   "observability": {
     "enabled": true,
     "logs": {
