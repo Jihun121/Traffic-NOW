@@ -3,7 +3,7 @@ import { normalizeTrafficPayload } from "../../functions/lib/normalizeTraffic.js
 const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
 const SNAPSHOT_KEY = "traffic:busan:latest";
-const PAGE_SIZE = 300;
+const PAGE_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 60000;
 const MAX_PARALLEL_PAGES = 4;
 
