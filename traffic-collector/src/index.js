@@ -1,3 +1,5 @@
+import { normalizeTrafficPayload } from "../../functions/lib/normalizeTraffic.js";
+
 const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
 const SNAPSHOT_KEY = "traffic:busan:latest";
@@ -229,30 +231,24 @@ async function fetchItsData(itsApiKey) {
 }
 
 function normalizeBusanItems(payload) {
-  const items = payload?.content?.items;
-  if (!Array.isArray(items)) return [];
+  const normalized = normalizeTrafficPayload(payload);
 
-  return items.map((item) => {
-    const roadName = String(item?.roadNm ?? "").trim();
-    const speed = Number(item?.spd);
+  return normalized.rows.map((row) => {
+    const roadName = String(row.roadName || "").trim();
+    const speed = Number(row.speed);
     const category = getRoadCategory(roadName);
     const evalResult = evaluateTrafficStatus(speed, category);
 
     return {
-      linkId: String(item?.lkId ?? "").trim(),
+      ...row,
       roadName,
-      startName: String(item?.bgngNodeNm ?? "").trim(),
-      endName: String(item?.endNodeNm ?? "").trim(),
       speed,
-      volume: Number(item?.vol),
+      volume: Number.isFinite(Number(row.volume)) ? Number(row.volume) : null,
       category,
       categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
       status: evalResult.status,
       statusText: evalResult.statusText,
-      statusColor: evalResult.color,
-      updatedAt: String(
-        item?.collectDt ?? item?.createdDate ?? item?.processDt ?? item?.updDt ?? ""
-      ).trim()
+      statusColor: evalResult.color
     };
   }).filter((row) =>
     (row.linkId || row.roadName || row.startName || row.endName) &&
@@ -276,7 +272,8 @@ export default {
 
       // 1. 부산 데이터 수집
       const first = await fetchBusanPage(busanApiKey, 1);
-      const totalCount = Number(first?.content?.totalCount ?? 0);
+      const firstNormalized = normalizeTrafficPayload(first);
+      const totalCount = Number(firstNormalized.totalCount ?? 0);
       const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
       const rows = normalizeBusanItems(first);
       const sourceParts = ["부산광역시 링크소통정보"];
@@ -289,6 +286,14 @@ export default {
         }
         const pages = await Promise.all(pageNumbers.map((no) => fetchBusanPage(busanApiKey, no)));
         for (const p of pages) rows.push(...normalizeBusanItems(p));
+      }
+
+      // 부산 API가 응답했지만 실제 유효 데이터가 0건이면
+      // 기존 정상 스냅샷을 빈 데이터로 덮어쓰지 않는다.
+      if (rows.length === 0) {
+        throw new Error(
+          `BUSAN_TRAFFIC_EMPTY_DATA: 부산 교통 API에서 유효한 행을 0건 수집했습니다. totalCount=${totalCount}`
+        );
       }
 
       // 2. ITS 데이터 수집 (보조/광역)
@@ -335,6 +340,11 @@ export default {
         warning: warnings.length > 0 ? warnings.join(" | ") : null
       };
 
+      // 유효한 스냅샷만 KV에 저장한다.
+      if (!Array.isArray(snapshot.rows) || snapshot.rows.length === 0) {
+        throw new Error("TRAFFIC_SNAPSHOT_EMPTY: 빈 스냅샷은 KV에 저장하지 않습니다.");
+      }
+
       // KV 캐시에 최신 스냅샷 저장 (2시간 만료 보존)
       await env.TRAFFIC_CACHE.put(SNAPSHOT_KEY, JSON.stringify(snapshot), {
         expirationTtl: 60 * 60 * 2
@@ -347,6 +357,7 @@ export default {
         congestedRatio: stats.statusRatios.congested,
         source: snapshot.source,
         warning: snapshot.warning,
+        busanReportedTotalCount: totalCount,
         durationMs: Date.now() - startedAt
       });
     } catch (error) {
