@@ -279,6 +279,8 @@ export default {
       const totalCount = Number(first?.content?.totalCount ?? 0);
       const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
       const rows = normalizeBusanItems(first);
+      const sourceParts = ["부산광역시 링크소통정보"];
+      const warnings = [];
 
       for (let start = 2; start <= totalPages; start += MAX_PARALLEL_PAGES) {
         const pageNumbers = [];
@@ -291,22 +293,30 @@ export default {
 
       // 2. ITS 데이터 수집 (보조/광역)
       if (itsApiKey) {
-        const itsRows = await fetchItsData(itsApiKey);
-        if (itsRows.length > 0) {
-          const normalizedIts = itsRows.map((item) => {
-            const cat = getRoadCategory(item.roadName);
-            const ev = evaluateTrafficStatus(item.speed, cat);
-            return {
-              ...item,
-              category: cat,
-              categoryName: SPEED_CRITERIA[cat]?.categoryName || "일반도로",
-              status: ev.status,
-              statusText: ev.statusText,
-              statusColor: ev.color,
-              updatedAt: new Date().toISOString()
-            };
-          });
-          rows.push(...normalizedIts);
+        try {
+          const itsRows = await fetchItsData(itsApiKey);
+          if (itsRows.length > 0) {
+            const normalizedIts = itsRows.map((item) => {
+              const cat = getRoadCategory(item.roadName);
+              const ev = evaluateTrafficStatus(item.speed, cat);
+              return {
+                ...item,
+                category: cat,
+                categoryName: SPEED_CRITERIA[cat]?.categoryName || "일반도로",
+                status: ev.status,
+                statusText: ev.statusText,
+                statusColor: ev.color,
+                updatedAt: new Date().toISOString()
+              };
+            });
+            rows.push(...normalizedIts);
+            sourceParts.push("국토교통부 ITS");
+          } else {
+            warnings.push("ITS API에서 유효한 교통 데이터가 반환되지 않았습니다.");
+          }
+        } catch (error) {
+          warnings.push(`ITS API 수집 실패: ${error?.message || error}`);
+          console.warn("ITS API fetch failed in collector:", error);
         }
       }
 
@@ -315,13 +325,14 @@ export default {
       const top10 = calculateTop10(rows);
 
       const snapshot = {
-        source: "부산광역시 링크소통정보 & 국토교통부 ITS",
+        source: sourceParts.join(" & "),
         stats,
         top10,
         rows,
         totalCount: rows.length,
         fetchedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        warning: warnings.length > 0 ? warnings.join(" | ") : null
       };
 
       // KV 캐시에 최신 스냅샷 저장 (2시간 만료 보존)
@@ -334,6 +345,8 @@ export default {
         totalRows: rows.length,
         avgSpeed: stats.averageSpeed,
         congestedRatio: stats.statusRatios.congested,
+        source: snapshot.source,
+        warning: snapshot.warning,
         durationMs: Date.now() - startedAt
       });
     } catch (error) {
