@@ -213,8 +213,30 @@ function diagnoseTrafficError(response, payload, rawText = "") {
     };
   }
 
-  // 2) API 키 미설정 판정
-  if (code === "BUSAN_TRAFFIC_API_KEY_MISSING" || !diag.hasBusanKey) {
+  // 2) KV 스냅샷 준비 상태 판정
+  if (code === "TRAFFIC_SNAPSHOT_NOT_READY") {
+    return {
+      isTimeout: false,
+      title: "⏳ 최신 교통 스냅샷 준비 중",
+      message: "백그라운드 수집기가 아직 최신 부산 교통정보를 KV에 저장하지 못했습니다.",
+      detail: detail || "traffic:busan:latest 스냅샷이 존재하지 않습니다.",
+      tip: "traffic-now-worker의 다음 Cron 실행 결과를 확인해 주세요. 수집이 성공하면 이 화면은 자동으로 정상 데이터를 표시합니다."
+    };
+  }
+
+  // 3) KV 바인딩 미설정 판정
+  if (code === "TRAFFIC_CACHE_NOT_CONFIGURED") {
+    return {
+      isTimeout: false,
+      title: "⚙️ 교통 스냅샷 저장소 연결 오류",
+      message: "Cloudflare Pages에 TRAFFIC_CACHE KV 바인딩이 연결되어 있지 않습니다.",
+      detail: detail,
+      tip: "Cloudflare Pages > Settings > Bindings에서 TRAFFIC_CACHE가 Traffic-NOW KV에 연결되어 있는지 확인하세요."
+    };
+  }
+
+  // 4) API 키 미설정 판정
+  if (code === "BUSAN_TRAFFIC_API_KEY_MISSING" || diag.hasBusanKey === false) {
     return {
       isTimeout: false,
       title: "🔑 API 인증키 누락",
@@ -224,7 +246,7 @@ function diagnoseTrafficError(response, payload, rawText = "") {
     };
   }
 
-  // 3) 공공데이터포털 인증/권한 에러
+  // 5) 공공데이터포털 인증/권한 에러
   if (code === "BUSAN_TRAFFIC_API_RESULT_ERROR") {
     return {
       isTimeout: false,
@@ -235,7 +257,7 @@ function diagnoseTrafficError(response, payload, rawText = "") {
     };
   }
 
-  // 4) 일반 HTTP 오류
+  // 6) 일반 HTTP 오류
   return {
     isTimeout: false,
     title: `⚠️ 서버 오류 (HTTP ${status || "알 수 없음"})`,
