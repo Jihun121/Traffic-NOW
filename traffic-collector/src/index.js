@@ -3,7 +3,7 @@ import { normalizeTrafficPayload } from "../../functions/lib/normalizeTraffic.js
 const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
 const SNAPSHOT_KEY = "traffic:busan:latest";
-const PAGE_SIZE = 1000;
+const PAGE_SIZE = 300;
 const REQUEST_TIMEOUT_MS = 60000;
 const MAX_PARALLEL_PAGES = 4;
 
@@ -15,6 +15,51 @@ function getApiKey(rawKey) {
   } catch {
     return raw;
   }
+}
+
+function sanitizeUrlForDiagnostics(value) {
+  try {
+    const url = new URL(value);
+    url.searchParams.delete("serviceKey");
+    url.searchParams.delete("apiKey");
+    return url.toString();
+  } catch {
+    return String(value);
+  }
+}
+
+function getBusanApiError(payload) {
+  const header = payload?.OpenAPI_ServiceResponse?.cmmMsgHeader || {};
+  const resultCode = String(
+    payload?.resultCode ??
+    payload?.result?.resultCode ??
+    header.returnReasonCode ??
+    ""
+  ).trim();
+
+  const resultMsg = String(
+    payload?.resultMsg ??
+    payload?.result?.resultMsg ??
+    header.errMsg ??
+    ""
+  ).trim();
+
+  const returnAuthMsg = String(
+    payload?.returnAuthMsg ??
+    payload?.result?.returnAuthMsg ??
+    header.returnAuthMsg ??
+    ""
+  ).trim();
+
+  return {
+    resultCode,
+    resultMsg,
+    returnAuthMsg,
+    hasError: Boolean(
+      resultCode &&
+      !["00", "0"].includes(resultCode)
+    )
+  };
 }
 
 // 도로 위계별 속도 기준
@@ -183,10 +228,15 @@ async function fetchBusanPage(apiKey, pageNo) {
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${text.slice(0, 300)}`);
 
     const payload = JSON.parse(text);
-    const header = payload?.OpenAPI_ServiceResponse?.cmmMsgHeader;
-    if (header?.returnReasonCode) {
-      throw new Error(`API error ${header.returnReasonCode}: ${header.errMsg || header.returnAuthMsg || ""}`);
+    const apiError = getBusanApiError(payload);
+
+    if (apiError.hasError) {
+      const safeUrl = sanitizeUrlForDiagnostics(url.toString());
+      throw new Error(
+        `BUSAN_TRAFFIC_API_ERROR: code=${apiError.resultCode}, message=${apiError.resultMsg || apiError.returnAuthMsg || "unknown"}, endpoint=${safeUrl}, response=${JSON.stringify(payload).slice(0, 1200)}`
+      );
     }
+
     return payload;
   } finally {
     clearTimeout(timeoutId);
@@ -292,7 +342,7 @@ export default {
       // 기존 정상 스냅샷을 빈 데이터로 덮어쓰지 않는다.
       if (rows.length === 0) {
         throw new Error(
-          `BUSAN_TRAFFIC_EMPTY_DATA: 부산 교통 API에서 유효한 행을 0건 수집했습니다. totalCount=${totalCount}`
+          `BUSAN_TRAFFIC_EMPTY_DATA: 부산 교통 API에서 유효한 행을 0건 수집했습니다. totalCount=${totalCount}. 첫 응답 구조를 확인하려면 API 오류가 아닌 경우에도 응답 메타데이터를 확인해야 합니다.`
         );
       }
 
