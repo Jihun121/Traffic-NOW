@@ -335,7 +335,7 @@ export default {
       // 기존 정상 스냅샷을 빈 데이터로 덮어쓰지 않는다.
       if (rows.length === 0) {
         throw new Error(
-          `BUSAN_TRAFFIC_EMPTY_DATA: 부산 교통 API에서 유효한 행을 0건 수집했습니다. totalCount=${totalCount}. 첫 응답 구조를 확인하려면 API 오류가 아닌 경우에도 응답 메타데이터를 확인해야 합니다.`
+          `BUSAN_TRAFFIC_EMPTY_DATA: 부산 교통 API에서 유효한 행을 0건 수집했습니다. totalCount=${busanReportedTotalCount}. 첫 응답 구조를 확인하려면 API 오류가 아닌 경우에도 응답 메타데이터를 확인해야 합니다.`
         );
       }
 
