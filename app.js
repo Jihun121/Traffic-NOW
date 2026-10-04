@@ -251,8 +251,10 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
 
   state.loading = true;
   state.regionKey = regionKey;
-  setStatus(forceRefresh ? "최신 데이터 갱신 중..." : "데이터 동기화 중...", false);
-  statusMessage.textContent = "실시간 부산 교통정보 및 ITS 데이터를 수집 및 분석 중입니다...";
+  setStatus(forceRefresh ? "최신 스냅샷 확인 중..." : "데이터 동기화 중...", false);
+  statusMessage.textContent = forceRefresh
+    ? "백그라운드 수집기가 저장한 최신 교통 스냅샷을 확인하고 있습니다..."
+    : "백그라운드 수집기가 저장한 교통 스냅샷을 불러오는 중입니다...";
 
   const params = new URLSearchParams({ region: regionKey });
   if (forceRefresh) params.set("forceRefresh", "1");
@@ -302,7 +304,7 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     renderTop10(state.top10);
     renderTable();
 
-    const cacheLabel = payload.cache === "SNAPSHOT" ? "초고속 스냅샷" : "실시간 온디맨드";
+    const cacheLabel = payload.cache === "SNAPSHOT" ? "백그라운드 스냅샷" : "스냅샷";
     const duration = payload.timing?.totalMs ? ` (${payload.timing.totalMs}ms)` : "";
     statusMessage.textContent = `${payload.source || "부산시+ITS"} 기반 실시간 분석 완료 · ${cacheLabel}${duration}`;
     setStatus("실시간 동기화 완료", true);
