@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "traffic-now-collector",
+  "name": "traffic-now-worker",
   "main": "src/index.js",
   "compatibility_date": "2026-09-30",
   "triggers": {
@@ -9,7 +9,14 @@
   "kv_namespaces": [
     {
       "binding": "TRAFFIC_CACHE",
-      "id": "YOUR_KV_NAMESPACE_ID"
+      "id": "0177091bb8fa45a8a5a23fb50230b84b"
     }
-  ]
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
 }
