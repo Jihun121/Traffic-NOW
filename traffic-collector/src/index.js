@@ -485,6 +485,7 @@ export default {
       // 한 사이클을 모두 모았을 때만 기존 latest를 새 전체 스냅샷으로 교체한다.
       const sourceParts = ["부산광역시 링크소통정보"];
       const warnings = [];
+      const rows = accumulator;
 
       // 2. ITS 데이터 수집 (보조/광역)
       if (itsApiKey) {
@@ -516,7 +517,6 @@ export default {
       }
 
       // 3. 비즈니스 파이프라인 연산: 전체 누적 데이터 기준 통계 및 정체 TOP 10 산출
-      const rows = accumulator;
       const stats = calculateBusanStats(rows);
       const top10 = calculateTop10(rows);
 
