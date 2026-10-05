@@ -3,9 +3,13 @@ import { normalizeTrafficPayload } from "../../functions/lib/normalizeTraffic.js
 const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
 const SNAPSHOT_KEY = "traffic:busan:latest";
+const COLLECTOR_STATE_KEY = "traffic:busan:collector-state";
+const COLLECTOR_ACCUMULATOR_KEY = "traffic:busan:collector-accumulator";
 const PAGE_SIZE = 100;
+const PAGES_PER_RUN = 3;
 const REQUEST_TIMEOUT_MS = 60000;
-const MAX_PARALLEL_PAGES = 4;
+const LATEST_SNAPSHOT_TTL = 60 * 60 * 12;
+const COLLECTION_TTL = 60 * 60 * 8;
 
 function getApiKey(rawKey) {
   const raw = String(rawKey || "").trim();
@@ -321,23 +325,166 @@ export default {
       if (!env.TRAFFIC_CACHE) throw new Error("TRAFFIC_CACHE KV binding is not configured.");
 
       // 1. 부산 데이터 수집
-      // Workers Free는 invocation당 외부 subrequest가 50건으로 제한되므로
-      // 전체 페이지를 순회하지 않고 1페이지만 수집한다.
-      // 매 10분마다 최신 표본을 교체하는 방식으로 API 호출량과 안정성을 우선한다.
-      const first = await fetchBusanPage(busanApiKey, 1);
-      const firstNormalized = normalizeTrafficPayload(first);
-      const busanReportedTotalCount = Number(firstNormalized.totalCount ?? 0);
-      const rows = normalizeBusanItems(first);
-      const sourceParts = ["부산광역시 링크소통정보"];
-      const warnings = [];
+      // Workers Free의 invocation당 subrequest 제한을 피하기 위해
+      // 매 10분마다 3페이지씩 순환 수집한다.
+      // 한 사이클이 끝날 때까지 기존 latest 스냅샷은 유지한다.
+      let state = await env.TRAFFIC_CACHE.get(COLLECTOR_STATE_KEY, "json");
 
-      // 부산 API가 응답했지만 실제 유효 데이터가 0건이면
-      // 기존 정상 스냅샷을 빈 데이터로 덮어쓰지 않는다.
-      if (rows.length === 0) {
+      let currentPage = Number(state?.currentPage || 1);
+      let totalPages = Number(state?.totalPages || 0);
+      let reportedTotalCount = Number(state?.reportedTotalCount || 0);
+
+      if (!Number.isInteger(currentPage) || currentPage < 1) currentPage = 1;
+
+      let accumulator = [];
+      if (currentPage > 1) {
+        accumulator = (await env.TRAFFIC_CACHE.get(COLLECTOR_ACCUMULATOR_KEY, "json")) || [];
+        if (!Array.isArray(accumulator)) accumulator = [];
+      }
+
+      let pageNumbers = [];
+      let firstPagePayload = null;
+
+      if (currentPage === 1) {
+        firstPagePayload = await fetchBusanPage(busanApiKey, 1);
+        const firstNormalized = normalizeTrafficPayload(firstPagePayload);
+        reportedTotalCount = Number(firstNormalized.totalCount ?? 0);
+        totalPages = Math.max(1, Math.ceil(reportedTotalCount / PAGE_SIZE));
+
+        for (let page = 1; page <= Math.min(PAGES_PER_RUN, totalPages); page += 1) {
+          pageNumbers.push(page);
+        }
+
+        accumulator = [];
+      } else {
+        if (!totalPages) {
+          totalPages = Math.max(1, Math.ceil(reportedTotalCount / PAGE_SIZE));
+        }
+
+        if (currentPage > totalPages) currentPage = 1;
+
+        for (
+          let page = currentPage;
+          page < currentPage + PAGES_PER_RUN && page <= totalPages;
+          page += 1
+        ) {
+          pageNumbers.push(page);
+        }
+      }
+
+      const pagePayloads = new Map();
+
+      if (firstPagePayload) {
+        pagePayloads.set(1, firstPagePayload);
+      }
+
+      const remainingPages = pageNumbers.filter((page) => page !== 1);
+      if (remainingPages.length > 0) {
+        const responses = await Promise.all(
+          remainingPages.map((page) => fetchBusanPage(busanApiKey, page))
+        );
+
+        remainingPages.forEach((page, index) => {
+          pagePayloads.set(page, responses[index]);
+        });
+      }
+
+      const batchRows = [];
+
+      for (const page of pageNumbers) {
+        const payload = pagePayloads.get(page);
+        if (!payload) continue;
+
+        const normalized = normalizeTrafficPayload(payload);
+        const pageReportedTotal = Number(normalized.totalCount ?? 0);
+
+        if (pageReportedTotal > 0) {
+          reportedTotalCount = Math.max(reportedTotalCount, pageReportedTotal);
+        }
+
+        const pageRows = normalizeBusanItems(payload);
+        if (pageRows.length === 0) {
+          console.warn({
+            event: "collector-page-empty",
+            page,
+            totalPages,
+            reportedTotalCount
+          });
+          continue;
+        }
+
+        batchRows.push(...pageRows);
+      }
+
+      if (batchRows.length === 0) {
         throw new Error(
-          `BUSAN_TRAFFIC_EMPTY_DATA: 부산 교통 API에서 유효한 행을 0건 수집했습니다. totalCount=${busanReportedTotalCount}. 첫 응답 구조를 확인하려면 API 오류가 아닌 경우에도 응답 메타데이터를 확인해야 합니다.`
+          `BUSAN_TRAFFIC_EMPTY_DATA: 수집한 페이지에서 유효한 교통 데이터가 0건입니다. currentPage=${currentPage}, totalPages=${totalPages}, reportedTotalCount=${reportedTotalCount}`
         );
       }
+
+      const mergedRows = new Map();
+
+      for (const row of accumulator) {
+        const key = row.linkId
+          ? `link:${row.linkId}`
+          : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
+        mergedRows.set(key, row);
+      }
+
+      for (const row of batchRows) {
+        const key = row.linkId
+          ? `link:${row.linkId}`
+          : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
+        mergedRows.set(key, row);
+      }
+
+      accumulator = Array.from(mergedRows.values());
+
+      const lastCollectedPage = Math.max(...pageNumbers);
+      const cycleComplete = lastCollectedPage >= totalPages;
+
+      console.log({
+        event: "collector-progress",
+        currentPage,
+        lastCollectedPage,
+        totalPages,
+        reportedTotalCount,
+        batchRows: batchRows.length,
+        accumulatedRows: accumulator.length,
+        cycleComplete
+      });
+
+      if (!cycleComplete) {
+        await env.TRAFFIC_CACHE.put(
+          COLLECTOR_ACCUMULATOR_KEY,
+          JSON.stringify(accumulator),
+          { expirationTtl: COLLECTION_TTL }
+        );
+
+        await env.TRAFFIC_CACHE.put(
+          COLLECTOR_STATE_KEY,
+          JSON.stringify({
+            currentPage: lastCollectedPage + 1,
+            totalPages,
+            reportedTotalCount,
+            updatedAt: new Date().toISOString()
+          }),
+          { expirationTtl: COLLECTION_TTL }
+        );
+
+        console.log({
+          event: "collector-batch-saved",
+          nextPage: lastCollectedPage + 1,
+          totalPages,
+          accumulatedRows: accumulator.length
+        });
+
+        return;
+      }
+
+      // 한 사이클을 모두 모았을 때만 기존 latest를 새 전체 스냅샷으로 교체한다.
+      const sourceParts = ["부산광역시 링크소통정보"];
+      const warnings = [];
 
       // 2. ITS 데이터 수집 (보조/광역)
       if (itsApiKey) {
@@ -368,7 +515,8 @@ export default {
         }
       }
 
-      // 3. 비즈니스 파이프라인 연산: 통계 및 정체 TOP 10 산출
+      // 3. 비즈니스 파이프라인 연산: 전체 누적 데이터 기준 통계 및 정체 TOP 10 산출
+      const rows = accumulator;
       const stats = calculateBusanStats(rows);
       const top10 = calculateTop10(rows);
 
@@ -380,7 +528,12 @@ export default {
         totalCount: rows.length,
         fetchedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt,
-        warning: warnings.length > 0 ? warnings.join(" | ") : null
+        warning: warnings.length > 0 ? warnings.join(" | ") : null,
+        collection: {
+          reportedTotalCount,
+          totalPages,
+          pagesPerRun: PAGES_PER_RUN
+        }
       };
 
       // 유효한 스냅샷만 KV에 저장한다.
@@ -390,8 +543,22 @@ export default {
 
       // KV 캐시에 최신 스냅샷 저장 (2시간 만료 보존)
       await env.TRAFFIC_CACHE.put(SNAPSHOT_KEY, JSON.stringify(snapshot), {
-        expirationTtl: 60 * 60 * 2
+        expirationTtl: LATEST_SNAPSHOT_TTL
       });
+
+      await env.TRAFFIC_CACHE.delete(COLLECTOR_ACCUMULATOR_KEY);
+
+      await env.TRAFFIC_CACHE.put(
+        COLLECTOR_STATE_KEY,
+        JSON.stringify({
+          currentPage: 1,
+          totalPages,
+          reportedTotalCount,
+          updatedAt: new Date().toISOString(),
+          lastCompletedAt: new Date().toISOString()
+        }),
+        { expirationTtl: COLLECTION_TTL }
+      );
 
       console.log({
         event: "collector-kv-write-success",
@@ -400,7 +567,8 @@ export default {
         congestedRatio: stats.statusRatios.congested,
         source: snapshot.source,
         warning: snapshot.warning,
-        busanReportedTotalCount,
+        busanReportedTotalCount: reportedTotalCount,
+        totalPages,
         durationMs: Date.now() - startedAt
       });
     } catch (error) {
