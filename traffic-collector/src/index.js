@@ -130,6 +130,8 @@ function calculateBusanStats(rows) {
     return {
       totalCount: 0,
       averageSpeed: 0,
+      trafficIndex: 0,
+      trafficIndexGrade: "데이터 없음",
       statusCounts: { smooth: 0, slow: 0, congested: 0 },
       statusRatios: { smooth: 0, slow: 0, congested: 0 },
       congestionLevel: "데이터 없음",
@@ -157,6 +159,17 @@ function calculateBusanStats(rows) {
   const slowRatio = Number(((slowCount / totalCount) * 100).toFixed(1));
   const congestedRatio = Number(((congestedCount / totalCount) * 100).toFixed(1));
 
+  // 부산 교통지수: 원활=1.0, 서행=0.5, 정체=0.0 가중치의 0~100 점수.
+  const trafficIndex = Number(
+    Math.max(0, Math.min(100, smoothRatio + (slowRatio * 0.5))).toFixed(1)
+  );
+
+  let trafficIndexGrade = "매우 혼잡";
+  if (trafficIndex >= 80) trafficIndexGrade = "매우 원활";
+  else if (trafficIndex >= 65) trafficIndexGrade = "원활";
+  else if (trafficIndex >= 50) trafficIndexGrade = "보통";
+  else if (trafficIndex >= 35) trafficIndexGrade = "혼잡";
+
   let congestionLevel = "원활";
   if (congestedRatio >= 25) congestionLevel = "매우 혼잡";
   else if (congestedRatio >= 15) congestionLevel = "혼잡";
@@ -172,6 +185,8 @@ function calculateBusanStats(rows) {
   return {
     totalCount,
     averageSpeed,
+    trafficIndex,
+    trafficIndexGrade,
     statusCounts: { smooth: smoothCount, slow: slowCount, congested: congestedCount },
     statusRatios: { smooth: smoothRatio, slow: slowRatio, congested: congestedRatio },
     congestionLevel,
