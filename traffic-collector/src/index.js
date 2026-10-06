@@ -353,6 +353,99 @@ async function calculateAndUpdateSuddenCongestion(env, rows) {
   };
 }
 
+function buildTrafficBriefing(stats, previousEntry, suddenCongestion, top10) {
+  const previousSpeed = Number(previousEntry?.averageSpeed);
+  const previousCongested = Number(previousEntry?.congestedRatio);
+  const previousIndex = Number(previousEntry?.trafficIndex);
+
+  const currentSpeed = Number(stats?.averageSpeed || 0);
+  const currentCongested = Number(stats?.statusRatios?.congested || 0);
+  const currentIndex = Number(stats?.trafficIndex || 0);
+
+  const speedDelta = Number.isFinite(previousSpeed)
+    ? Number((currentSpeed - previousSpeed).toFixed(1))
+    : null;
+  const congestionDelta = Number.isFinite(previousCongested)
+    ? Number((currentCongested - previousCongested).toFixed(1))
+    : null;
+  const indexDelta = Number.isFinite(previousIndex)
+    ? Number((currentIndex - previousIndex).toFixed(1))
+    : null;
+
+  let trend = "유지";
+  if (indexDelta !== null) {
+    if (indexDelta <= -8) trend = "악화";
+    else if (indexDelta >= 8) trend = "개선";
+    else if (indexDelta <= -3) trend = "다소 악화";
+    else if (indexDelta >= 3) trend = "다소 개선";
+  }
+
+  const sentences = [];
+
+  if (indexDelta === null) {
+    sentences.push(`현재 부산 교통지수는 ${currentIndex.toFixed(1)}점으로 ${stats.trafficIndexGrade || stats.congestionLevel || "현재 상태"}입니다.`);
+  } else {
+    const direction = indexDelta > 0 ? "개선" : indexDelta < 0 ? "악화" : "변화 없음";
+    sentences.push(
+      `현재 부산 교통지수는 ${currentIndex.toFixed(1)}점으로 직전 완성 수집 사이클 대비 ${Math.abs(indexDelta).toFixed(1)}점 ${direction}했습니다.`
+    );
+  }
+
+  if (speedDelta !== null) {
+    if (speedDelta < -3) {
+      sentences.push(`부산 평균속도는 ${Math.abs(speedDelta).toFixed(1)}km/h 낮아졌습니다.`);
+    } else if (speedDelta > 3) {
+      sentences.push(`부산 평균속도는 ${speedDelta.toFixed(1)}km/h 높아졌습니다.`);
+    } else {
+      sentences.push("부산 평균속도는 직전 사이클과 큰 차이가 없습니다.");
+    }
+  }
+
+  if (congestionDelta !== null) {
+    if (congestionDelta >= 5) {
+      sentences.push(`정체 비율이 ${congestionDelta.toFixed(1)}%p 증가했습니다.`);
+    } else if (congestionDelta <= -5) {
+      sentences.push(`정체 비율이 ${Math.abs(congestionDelta).toFixed(1)}%p 감소했습니다.`);
+    }
+  }
+
+  const suddenCount = Number(suddenCongestion?.detectedCount || 0);
+  if (suddenCount > 0) {
+    sentences.push(`평소보다 급격히 느려진 도로 ${suddenCount}개 구간이 감지되었습니다.`);
+  } else {
+    sentences.push("현재 기준에서 급격한 속도 저하가 감지된 주요 구간은 없습니다.");
+  }
+
+  const bottleneck = top10?.[0];
+  if (bottleneck?.roadName) {
+    sentences.push(
+      `현재 가장 느린 주요 구간은 ${bottleneck.roadName} ${bottleneck.startName || ""} → ${bottleneck.endName || ""}이며 ${Number(bottleneck.speed).toFixed(1)}km/h입니다.`
+    );
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    trend,
+    headline:
+      trend === "악화"
+        ? "부산 교통 흐름이 직전 사이클보다 악화되었습니다."
+        : trend === "개선"
+          ? "부산 교통 흐름이 직전 사이클보다 개선되었습니다."
+          : "부산 교통 흐름은 직전 사이클과 비교해 큰 변화가 없습니다.",
+    summary: sentences.join(" "),
+    metrics: {
+      currentTrafficIndex: currentIndex,
+      previousTrafficIndex: Number.isFinite(previousIndex) ? previousIndex : null,
+      trafficIndexDelta: indexDelta,
+      currentAverageSpeed: currentSpeed,
+      averageSpeedDelta: speedDelta,
+      currentCongestedRatio: currentCongested,
+      congestedRatioDelta: congestionDelta,
+      suddenCongestionCount: suddenCount
+    }
+  };
+}
+
 async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
   const fetchedAt = snapshot.fetchedAt || new Date().toISOString();
   const cycleId = fetchedAt.replace(/[-:.TZ]/g, "");
@@ -378,6 +471,7 @@ async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
     totalPages: Number(snapshot.collection?.totalPages || 0),
     stats: calculateBusanStats(historyRows),
     suddenCongestion: snapshot.suddenCongestion || null,
+    trafficBriefing: snapshot.trafficBriefing || null,
     rows: historyRows
   };
 
@@ -401,6 +495,7 @@ async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
       fetchedAt,
       totalCount: historyRows.length,
       averageSpeed: historyEntry.stats.averageSpeed,
+      trafficIndex: historyEntry.stats.trafficIndex,
       congestedRatio: historyEntry.stats.statusRatios.congested
     }
   ]
@@ -853,10 +948,26 @@ export default {
         });
       }
 
+      const existingHistoryIndex =
+        (await env.TRAFFIC_CACHE.get(HISTORY_INDEX_KEY, "json")) || [];
+      const previousHistoryEntry = Array.isArray(existingHistoryIndex)
+        ? existingHistoryIndex
+            .filter((entry) => Number.isFinite(Date.parse(entry?.fetchedAt || "")))
+            .sort((a, b) => Date.parse(b.fetchedAt) - Date.parse(a.fetchedAt))[0]
+        : null;
+
+      const trafficBriefing = buildTrafficBriefing(
+        stats,
+        previousHistoryEntry,
+        suddenCongestion,
+        top10
+      );
+
       const snapshot = {
         source: sourceParts.join(" & "),
         stats,
         top10,
+        trafficBriefing,
         suddenCongestion,
         rows,
         totalCount: rows.length,
