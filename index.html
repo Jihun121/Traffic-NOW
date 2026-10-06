@@ -89,6 +89,43 @@
       </div>
     </section>
 
+    <!-- 3. 오늘 부산 교통 브리핑 -->
+    <section class="section-container">
+      <div class="section-title-wrap">
+        <div>
+          <h2>📰 오늘 부산 교통 브리핑</h2>
+          <p class="section-desc">직전 완성 수집 사이클과 비교한 부산 전역 교통 흐름 요약입니다.</p>
+        </div>
+        <span id="briefingTrendBadge" class="top10-badge briefing-badge">BRIEFING</span>
+      </div>
+
+      <div class="card briefing-panel">
+        <strong id="briefingHeadline" class="briefing-headline">교통 브리핑을 불러오는 중입니다...</strong>
+        <p id="briefingSummary" class="briefing-summary">-</p>
+
+        <div class="briefing-metrics">
+          <div class="briefing-metric">
+            <span>교통지수 변화</span>
+            <strong id="briefingIndexDelta">-</strong>
+          </div>
+          <div class="briefing-metric">
+            <span>평균속도 변화</span>
+            <strong id="briefingSpeedDelta">-</strong>
+          </div>
+          <div class="briefing-metric">
+            <span>정체율 변화</span>
+            <strong id="briefingCongestionDelta">-</strong>
+          </div>
+          <div class="briefing-metric">
+            <span>급격한 정체</span>
+            <strong id="briefingSuddenCount">-</strong>
+          </div>
+        </div>
+
+        <div id="briefingMeta" class="briefing-meta">분석 기준: 직전 완성 교통 수집 사이클</div>
+      </div>
+    </section>
+
     <!-- 3. 교통 타임머신 / 시계열 분석 -->
     <section class="section-container">
       <div class="section-title-wrap">
