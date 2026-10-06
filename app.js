@@ -14,7 +14,11 @@ const state = {
   mapFilter: "all",
   map: null,
   mapLayer: null,
-  mapRows: []
+  mapRows: [],
+  mapTotalRows: 0,
+  mapGeometry: null,
+  mapGeometryMeta: null,
+  mapGeometryPromise: null
 };
 
 // DOM 요소 캐싱
@@ -300,13 +304,82 @@ function getMapPoint(row) {
   return null;
 }
 
+function geometryToLatLngs(geometry) {
+  if (!Array.isArray(geometry) || geometry.length < 2) return null;
+
+  const isMultiPart =
+    Array.isArray(geometry[0]) &&
+    Array.isArray(geometry[0][0]);
+
+  if (isMultiPart) {
+    return geometry
+      .map(function(part) {
+        if (!Array.isArray(part) || part.length < 2) return null;
+        return part
+          .map(function(pair) {
+            if (!Array.isArray(pair) || pair.length < 2) return null;
+            const longitude = Number(pair[0]);
+            const latitude = Number(pair[1]);
+            if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+            return [latitude, longitude];
+          })
+          .filter(Boolean);
+      })
+      .filter(function(part) {
+        return Array.isArray(part) && part.length >= 2;
+      });
+  }
+
+  return geometry
+    .map(function(pair) {
+      if (!Array.isArray(pair) || pair.length < 2) return null;
+      const longitude = Number(pair[0]);
+      const latitude = Number(pair[1]);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+      return [latitude, longitude];
+    })
+    .filter(Boolean);
+}
+
+async function loadTrafficMapGeometry() {
+  if (state.mapGeometry) return state.mapGeometry;
+  if (state.mapGeometryPromise) return state.mapGeometryPromise;
+
+  state.mapGeometryPromise = fetch("/data/traffic-link-geometry.json", {
+    cache: "force-cache"
+  })
+    .then(function(response) {
+      if (!response.ok) {
+        throw new Error("교통 도로 geometry 파일을 불러오지 못했습니다. HTTP " + response.status);
+      }
+      return response.json();
+    })
+    .then(function(payload) {
+      if (!payload || typeof payload.links !== "object") {
+        throw new Error("교통 도로 geometry 파일 형식이 올바르지 않습니다.");
+      }
+
+      state.mapGeometry = payload.links;
+      state.mapGeometryMeta = payload;
+      return state.mapGeometry;
+    })
+    .finally(function() {
+      state.mapGeometryPromise = null;
+    });
+
+  return state.mapGeometryPromise;
+}
 
 async function loadTrafficMap(regionKey) {
   try {
-    const response = await fetch(
-      "/api/traffic-map?region=" + encodeURIComponent(regionKey || state.regionKey || "busan"),
-      { cache: "no-store" }
-    );
+    const [response, geometry] = await Promise.all([
+      fetch(
+        "/api/traffic-map?region=" + encodeURIComponent(regionKey || state.regionKey || "busan"),
+        { cache: "no-store" }
+      ),
+      loadTrafficMapGeometry()
+    ]);
+
     const payload = await response.json();
 
     if (!response.ok || !payload || !payload.ok) {
@@ -314,19 +387,34 @@ async function loadTrafficMap(regionKey) {
     }
 
     state.mapRows = Array.isArray(payload.data) ? payload.data : [];
+    state.mapTotalRows = Number(payload.totalRows || state.mapRows.length);
+
     renderTrafficMap(state.mapRows);
 
-    if (mapMessage && payload.coordinateRows !== undefined) {
+    const matchedInSnapshot = state.mapRows.filter(function(row) {
+      return Boolean(geometry[String(row.linkId || "")]);
+    }).length;
+
+    if (mapMessage && state.mapRows.length > 0) {
+      const metaMatched = Number(state.mapGeometryMeta?.matchedLinkCount || 0);
+      const metaTotal = Number(state.mapGeometryMeta?.trafficLinkCount || state.mapTotalRows);
+      const metaUnmatched = Number(state.mapGeometryMeta?.unmatchedLinkCount || 0);
+
       mapMessage.textContent =
-        Number(payload.coordinateRows).toLocaleString("ko-KR") +
-        "개 좌표 링크 · 현재 권역 전체 " +
-        Number(payload.totalRows || 0).toLocaleString("ko-KR") +
-        "개 링크 중 지도 표시 대상";
+        "실제 도로 선형 " +
+        matchedInSnapshot.toLocaleString("ko-KR") +
+        "개 표시 · 전체 " +
+        state.mapTotalRows.toLocaleString("ko-KR") +
+        "개 링크 · geometry 매칭 " +
+        metaMatched.toLocaleString("ko-KR") +
+        "/" +
+        metaTotal.toLocaleString("ko-KR") +
+        (metaUnmatched > 0 ? " · " + metaUnmatched.toLocaleString("ko-KR") + "개 미매칭" : "");
     }
   } catch (error) {
     if (mapMessage) {
       mapMessage.textContent =
-        "지도 데이터를 불러오지 못했습니다: " +
+        "실제 도로 geometry 지도를 불러오지 못했습니다: " +
         (error && error.message ? error.message : error);
     }
   }
@@ -383,14 +471,15 @@ function renderTrafficMap(rows) {
       })
     : candidates;
 
-  const plotted = [];
+  const plottedPoints = [];
+  let plottedLines = 0;
+  let geometryMatched = 0;
 
   filtered.forEach(function(row) {
     const color = getMapStatusColor(row.status);
-    const startLat = Number(row.startLatitude);
-    const startLng = Number(row.startLongitude);
-    const endLat = Number(row.endLatitude);
-    const endLng = Number(row.endLongitude);
+    const linkId = String(row.linkId || "");
+    const geometry = state.mapGeometry?.[linkId];
+    const latLngs = geometryToLatLngs(geometry);
 
     const popup =
       '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong><br>' +
@@ -398,26 +487,32 @@ function renderTrafficMap(rows) {
       '<strong>' + formatNumber(row.speed, 1) + ' km/h</strong> · ' +
       escapeHtml(row.statusText || "정보 없음");
 
-    if (
-      Number.isFinite(startLat) &&
-      Number.isFinite(startLng) &&
-      Number.isFinite(endLat) &&
-      Number.isFinite(endLng)
-    ) {
+    if (latLngs && latLngs.length >= 2) {
       const line = window.L.polyline(
-        [[startLat, startLng], [endLat, endLng]],
+        latLngs,
         {
           color,
-          weight: row.status === "CONGESTED" ? 7 : row.status === "SLOW" ? 5 : 4,
-          opacity: 0.8
+          weight: row.status === "CONGESTED" ? 5 : row.status === "SLOW" ? 4 : 3,
+          opacity: 0.78,
+          interactive: true
         }
       );
 
       line.bindPopup(popup);
       line.addTo(state.mapLayer);
 
-      plotted.push({ latitude: startLat, longitude: startLng });
-      plotted.push({ latitude: endLat, longitude: endLng });
+      const first = latLngs[0];
+      const last = latLngs[latLngs.length - 1];
+
+      if (Array.isArray(first) && first.length >= 2) {
+        plottedPoints.push({ latitude: first[0], longitude: first[1] });
+      }
+      if (Array.isArray(last) && last.length >= 2) {
+        plottedPoints.push({ latitude: last[0], longitude: last[1] });
+      }
+
+      geometryMatched++;
+      plottedLines++;
       return;
     }
 
@@ -437,16 +532,17 @@ function renderTrafficMap(rows) {
 
     marker.bindPopup(popup);
     marker.addTo(state.mapLayer);
-    plotted.push(point);
+    plottedPoints.push(point);
   });
 
-  if (plotted.length > 0) {
+  if (plottedPoints.length > 0) {
     const bounds = window.L.latLngBounds(
-      plotted.map(function(point) {
+      plottedPoints.map(function(point) {
         return [point.latitude, point.longitude];
       })
     );
-    state.map.fitBounds(bounds.pad(0.08), {
+
+    state.map.fitBounds(bounds.pad(0.06), {
       maxZoom: 13
     });
   } else {
@@ -454,23 +550,27 @@ function renderTrafficMap(rows) {
   }
 
   if (mapMessage) {
-    const coordinateCount = candidates.filter(function(row) {
-      return Boolean(getMapPoint(row)) ||
-        (
-          Number.isFinite(Number(row.startLatitude)) &&
-          Number.isFinite(Number(row.startLongitude)) &&
-          Number.isFinite(Number(row.endLatitude)) &&
-          Number.isFinite(Number(row.endLongitude))
-        );
-    }).length;
+    const overallMatched = Number(state.mapGeometryMeta?.matchedLinkCount || 0);
+    const overallTotal = Number(state.mapGeometryMeta?.trafficLinkCount || state.mapTotalRows || candidates.length);
+    const overallUnmatched = Number(state.mapGeometryMeta?.unmatchedLinkCount || Math.max(0, overallTotal - overallMatched));
 
-    if (coordinateCount === 0) {
+    if (plottedLines === 0) {
       mapMessage.textContent =
-        "현재 부산 API snapshot에 지도 좌표가 포함된 교통 링크가 없습니다. 좌표가 제공되면 자동으로 지도에 표시됩니다.";
+        "표준노드링크 geometry와 매칭된 도로가 없어 현재 지도를 표시할 수 없습니다.";
     } else {
+      const filterLabel = state.mapFilter === "congested" ? "정체·서행" : "전체";
       mapMessage.textContent =
-        plotted.length.toLocaleString("ko-KR") + "개 교통 링크 표시 · " +
-        coordinateCount.toLocaleString("ko-KR") + "개 좌표 확보";
+        filterLabel + " 도로 선형 " +
+        plottedLines.toLocaleString("ko-KR") +
+        "개 표시 · 전체 링크 " +
+        Number(state.mapTotalRows || candidates.length).toLocaleString("ko-KR") +
+        "개 · geometry 매칭 " +
+        overallMatched.toLocaleString("ko-KR") +
+        "/" +
+        overallTotal.toLocaleString("ko-KR") +
+        " (미매칭 " +
+        overallUnmatched.toLocaleString("ko-KR") +
+        "개)";
     }
   }
 }
@@ -1059,7 +1159,7 @@ if (mapCongestedButton) {
     state.mapFilter = "congested";
     mapCongestedButton.classList.add("active");
     if (mapAllButton) mapAllButton.classList.remove("active");
-    renderTrafficMap(state.rawData);
+    renderTrafficMap(state.mapRows);
   });
 }
 
