@@ -570,9 +570,9 @@ function renderMapTiles() {
   const height = canvas.clientHeight;
   if (!width || !height) return;
 
-  // 화면 확대 단계보다 한 단계 높은 타일을 받아서 축소 표시하면
-  // 현재처럼 분수 줌에서 발생하는 흐릿함을 줄일 수 있다.
-  const tileZoom = Math.min(19, Math.max(8, Math.ceil(state.map.zoom) + 1));
+  // 지도와 동일한 줌 레벨의 타일을 사용해 불필요하게 작은 글씨와
+  // 과도한 축소 표시를 피한다. 분수 줌은 브라우저가 자연스럽게 보간한다.
+  const tileZoom = Math.min(19, Math.max(8, Math.round(state.map.zoom)));
   const scale = Math.pow(2, state.map.zoom - tileZoom);
   const tileSize = 256;
   const centerTileWorld = mapProject(state.map.center.lng, state.map.center.lat, tileZoom);
