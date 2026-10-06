@@ -83,6 +83,60 @@
       </div>
     </section>
 
+    <!-- 3. 교통 타임머신 / 시계열 분석 -->
+    <section class="section-container">
+      <div class="section-title-wrap">
+        <div>
+          <h2>🕒 부산 교통 타임머신</h2>
+          <p class="section-desc">완성된 전체 수집 사이클의 평균속도와 정체율 변화를 확인합니다.</p>
+        </div>
+        <span class="top10-badge history-badge">HISTORY</span>
+      </div>
+
+      <div class="card history-panel">
+        <div class="history-toolbar">
+          <div>
+            <span class="history-label">과거 시점 선택</span>
+            <select id="historySelect" class="history-select">
+              <option value="">시계열 데이터를 불러오는 중...</option>
+            </select>
+          </div>
+          <button type="button" id="historyRefreshButton" class="btn-refresh history-refresh">
+            시계열 새로고침
+          </button>
+        </div>
+
+        <div class="history-chart-wrap">
+          <div id="historyChart" class="history-chart">
+            <div class="loading-placeholder">시계열 데이터를 준비하고 있습니다...</div>
+          </div>
+        </div>
+
+        <div class="history-summary-grid">
+          <div class="history-metric">
+            <span>선택 시점 평균속도</span>
+            <strong id="historyAvgSpeed">-</strong>
+          </div>
+          <div class="history-metric">
+            <span>선택 시점 정체율</span>
+            <strong id="historyCongestedRatio">-</strong>
+          </div>
+          <div class="history-metric">
+            <span>선택 시점 종합상태</span>
+            <strong id="historyCongestionLevel">-</strong>
+          </div>
+          <div class="history-metric">
+            <span>수집 시각</span>
+            <strong id="historyFetchedAt">-</strong>
+          </div>
+        </div>
+
+        <div id="historyMessage" class="message history-message">
+          시계열 데이터를 불러오는 중입니다...
+        </div>
+      </div>
+    </section>
+
     <!-- 3. 실시간 정체 TOP 10 랭킹 (두번째 이미지: 정체 TOP 10) -->
     <section class="section-container">
       <div class="section-title-wrap">
