@@ -9,7 +9,8 @@ const state = {
   onlyCongested: false,
   history: [],
   historyLoading: false,
-  selectedHistoryAt: ""
+  selectedHistoryAt: "",
+  suddenCongestion: null
 };
 
 // DOM 요소 캐싱
@@ -48,6 +49,7 @@ const historyCongestedRatio = document.querySelector("#historyCongestedRatio");
 const historyCongestionLevel = document.querySelector("#historyCongestionLevel");
 const historyFetchedAt = document.querySelector("#historyFetchedAt");
 const historyMessage = document.querySelector("#historyMessage");
+const suddenCongestionContainer = document.querySelector("#suddenCongestionContainer");
 
 function setStatus(text, active = false) {
   if (statusText) statusText.textContent = text;
@@ -201,6 +203,52 @@ function renderTable() {
   resultCountLabel.textContent = `조회 결과: ${filtered.length.toLocaleString("ko-KR")}건 (최대 100건 표시)`;
 }
 
+
+
+function renderSuddenCongestion(sudden) {
+  if (!suddenCongestionContainer) return;
+
+  const items = Array.isArray(sudden && sudden.items) ? sudden.items : [];
+  const detectedCount = Number(sudden && sudden.detectedCount || 0);
+
+  if (items.length === 0) {
+    const message = detectedCount > 0
+      ? "급격한 속도 저하가 감지되었지만 표시할 구간을 계산하지 못했습니다."
+      : (Number(sudden && sudden.minimumSamples || 0) > 0
+        ? "도로별 기준 데이터가 충분히 쌓이지 않았습니다. 몇 개의 전체 수집 사이클이 더 쌓이면 급격한 정체 감지가 활성화됩니다."
+        : "현재 평소 대비 급격한 속도 저하가 감지되지 않았습니다.");
+
+    suddenCongestionContainer.innerHTML =
+      '<div class="loading-placeholder">' + escapeHtml(message) + '</div>';
+    return;
+  }
+
+  suddenCongestionContainer.innerHTML = items.map(function(item, index) {
+    return (
+      '<article class="sudden-item">' +
+        '<div class="sudden-rank">' + (index + 1) + '</div>' +
+        '<div class="sudden-main">' +
+          '<strong class="sudden-road">' + escapeHtml(item.roadName || "도로명 없음") + '</strong>' +
+          '<span class="sudden-section">' +
+            escapeHtml(item.startName || "-") + ' → ' + escapeHtml(item.endName || "-") +
+          '</span>' +
+        '</div>' +
+        '<div class="sudden-current">' +
+          '<span>현재</span>' +
+          '<strong>' + formatNumber(item.currentSpeed, 1) + ' km/h</strong>' +
+        '</div>' +
+        '<div class="sudden-baseline">' +
+          '<span>평소 기준</span>' +
+          '<strong>' + formatNumber(item.baselineSpeed, 1) + ' km/h</strong>' +
+        '</div>' +
+        '<div class="sudden-drop">' +
+          '<strong>-' + formatNumber(item.dropKmh, 1) + ' km/h</strong>' +
+          '<span>-' + formatNumber(item.dropRatio, 1) + '%</span>' +
+        '</div>' +
+      '</article>'
+    );
+  }).join("");
+}
 
 function formatHistoryDate(value) {
   if (!value) return "-";
@@ -543,9 +591,11 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     state.rawData = Array.isArray(payload.data) ? payload.data : [];
     state.stats = payload.stats || null;
     state.top10 = Array.isArray(payload.top10) ? payload.top10 : [];
+    state.suddenCongestion = payload.suddenCongestion || null;
 
     renderStats(state.stats, payload.updatedAt);
     renderTop10(state.top10);
+    renderSuddenCongestion(state.suddenCongestion);
     renderTable();
 
     const cacheLabel = payload.cache === "SNAPSHOT" ? "백그라운드 스냅샷" : "스냅샷";
