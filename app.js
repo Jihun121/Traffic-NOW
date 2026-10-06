@@ -570,7 +570,9 @@ function renderMapTiles() {
   const height = canvas.clientHeight;
   if (!width || !height) return;
 
-  const tileZoom = Math.round(state.map.zoom);
+  // 화면 확대 단계보다 한 단계 높은 타일을 받아서 축소 표시하면
+  // 현재처럼 분수 줌에서 발생하는 흐릿함을 줄일 수 있다.
+  const tileZoom = Math.min(19, Math.max(8, Math.ceil(state.map.zoom) + 1));
   const scale = Math.pow(2, state.map.zoom - tileZoom);
   const tileSize = 256;
   const centerTileWorld = mapProject(state.map.center.lng, state.map.center.lat, tileZoom);
