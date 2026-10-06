@@ -61,6 +61,7 @@ function summarizeHistoryEntry(entry) {
     reportedTotalCount: Number(entry?.reportedTotalCount || 0),
     totalPages: Number(entry?.totalPages || 0),
     averageSpeed: Number(entry?.stats?.averageSpeed || 0),
+    trafficIndex: Number(entry?.stats?.trafficIndex || 0),
     congestedRatio: Number(entry?.stats?.statusRatios?.congested || 0),
     slowRatio: Number(entry?.stats?.statusRatios?.slow || 0),
     smoothRatio: Number(entry?.stats?.statusRatios?.smooth || 0),
