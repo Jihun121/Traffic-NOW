@@ -767,7 +767,7 @@ export default {
       };
 
       try {
-        suddenCongestion = await calculateAndUpdateSuddenCongestion(env, rows);
+        suddenCongestion = await calculateAndUpdateSuddenCongestion(env, accumulator);
         console.log({
           event: "collector-sudden-congestion-analysis",
           detectedCount: suddenCongestion.detectedCount,
