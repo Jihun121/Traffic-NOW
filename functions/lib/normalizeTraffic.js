@@ -6,6 +6,12 @@ const FIELD_ALIASES = {
   endName: ["endName", "endPoint", "end", "END_NAME", "endNodeNm", "종점명", "구간종점명", "종점"],
   speed: ["speed", "avgSpeed", "averageSpeed", "SPEED", "AVG_SPEED", "speedKmh", "spd", "통행속도", "속도"],
   volume: ["volume", "trafficVolume", "traffic", "VOLUME", "TRAFFIC_VOLUME", "vol", "교통량", "통행량"],
+  latitude: ["latitude", "lat", "LAT", "y", "Y", "위도", "pointY", "중심위도"],
+  longitude: ["longitude", "lng", "lon", "LNG", "LONGITUDE", "x", "X", "경도", "pointX", "중심경도"],
+  startLatitude: ["startLatitude", "startLat", "stLat", "시점위도", "시점_lat", "fromLat"],
+  startLongitude: ["startLongitude", "startLng", "startLon", "stLng", "시점경도", "시점_lng", "fromLng"],
+  endLatitude: ["endLatitude", "endLat", "edLat", "종점위도", "종점_lat", "toLat"],
+  endLongitude: ["endLongitude", "endLng", "endLon", "edLng", "종점경도", "종점_lng", "toLng"],
   updatedAt: [
     "updatedAt",
     "createdDate",
@@ -43,6 +49,21 @@ function toFiniteNumber(value) {
 
   const number = Number(normalized);
   return Number.isFinite(number) ? number : null;
+}
+
+function toCoordinate(value, kind) {
+  const number = toFiniteNumber(value);
+  if (number === null) return null;
+
+  if (kind === "latitude") {
+    return number >= 33 && number <= 39.5 ? number : null;
+  }
+
+  if (kind === "longitude") {
+    return number >= 124 && number <= 132.5 ? number : null;
+  }
+
+  return null;
 }
 
 function pick(source, aliases) {
@@ -135,6 +156,12 @@ export function normalizeTrafficPayload(payload) {
         endName: String(pick(item, FIELD_ALIASES.endName) ?? "").trim(),
         speed,
         volume,
+        latitude: toCoordinate(pick(item, FIELD_ALIASES.latitude), "latitude"),
+        longitude: toCoordinate(pick(item, FIELD_ALIASES.longitude), "longitude"),
+        startLatitude: toCoordinate(pick(item, FIELD_ALIASES.startLatitude), "latitude"),
+        startLongitude: toCoordinate(pick(item, FIELD_ALIASES.startLongitude), "longitude"),
+        endLatitude: toCoordinate(pick(item, FIELD_ALIASES.endLatitude), "latitude"),
+        endLongitude: toCoordinate(pick(item, FIELD_ALIASES.endLongitude), "longitude"),
         updatedAt: String(pick(item, FIELD_ALIASES.updatedAt) ?? "").trim()
       };
     })
