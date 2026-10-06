@@ -884,6 +884,8 @@ h1 {
   max-height: none;
   user-select: none;
   pointer-events: none;
+  image-rendering: auto;
+  backface-visibility: hidden;
 }
 
 .traffic-map-svg {
