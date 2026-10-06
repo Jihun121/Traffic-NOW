@@ -6,7 +6,10 @@ const state = {
   top10: [],
   loading: false,
   searchTerm: "",
-  onlyCongested: false
+  onlyCongested: false,
+  history: [],
+  historyLoading: false,
+  selectedHistoryAt: ""
 };
 
 // DOM 요소 캐싱
@@ -36,6 +39,15 @@ const onlyCongestedCheck = document.querySelector("#onlyCongestedCheck");
 const statusMessage = document.querySelector("#statusMessage");
 const resultCountLabel = document.querySelector("#resultCountLabel");
 const errorDetail = document.querySelector("#errorDetail");
+
+const historySelect = document.querySelector("#historySelect");
+const historyRefreshButton = document.querySelector("#historyRefreshButton");
+const historyChart = document.querySelector("#historyChart");
+const historyAvgSpeed = document.querySelector("#historyAvgSpeed");
+const historyCongestedRatio = document.querySelector("#historyCongestedRatio");
+const historyCongestionLevel = document.querySelector("#historyCongestionLevel");
+const historyFetchedAt = document.querySelector("#historyFetchedAt");
+const historyMessage = document.querySelector("#historyMessage");
 
 function setStatus(text, active = false) {
   if (statusText) statusText.textContent = text;
@@ -187,6 +199,216 @@ function renderTable() {
   `).join("");
 
   resultCountLabel.textContent = `조회 결과: ${filtered.length.toLocaleString("ko-KR")}건 (최대 100건 표시)`;
+}
+
+
+function formatHistoryDate(value) {
+  if (!value) return "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function renderHistorySummary(item) {
+  if (!item) {
+    historyAvgSpeed.textContent = "-";
+    historyCongestedRatio.textContent = "-";
+    historyCongestionLevel.textContent = "-";
+    historyFetchedAt.textContent = "-";
+    return;
+  }
+
+  historyAvgSpeed.textContent = formatNumber(item.averageSpeed, 1) + " km/h";
+  historyCongestedRatio.textContent = formatNumber(item.congestedRatio, 1) + "%";
+  historyCongestionLevel.textContent = item.congestionLevel || "-";
+  historyFetchedAt.textContent = formatHistoryDate(item.fetchedAt);
+}
+
+function renderHistoryChart(history) {
+  if (!historyChart) return;
+
+  if (!Array.isArray(history) || history.length < 1) {
+    historyChart.innerHTML =
+      '<div class="loading-placeholder">' +
+      '아직 완성된 교통 시계열 데이터가 없습니다. 전체 수집 사이클이 완료되면 자동으로 표시됩니다.' +
+      '</div>';
+    renderHistorySummary(null);
+    return;
+  }
+
+  const width = 900;
+  const height = 300;
+  const pad = { top: 24, right: 54, bottom: 42, left: 54 };
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+
+  const speedValues = history.map(function(item) { return Number(item.averageSpeed) || 0; });
+  const minSpeedRaw = Math.min.apply(null, speedValues);
+  const maxSpeedRaw = Math.max.apply(null, speedValues);
+  const minSpeed = Math.max(0, Math.floor((minSpeedRaw - 5) / 5) * 5);
+  const maxSpeed = Math.max(minSpeed + 10, Math.ceil((maxSpeedRaw + 5) / 5) * 5);
+
+  function x(index) {
+    return pad.left + (history.length === 1
+      ? plotW / 2
+      : (index / (history.length - 1)) * plotW);
+  }
+
+  function ySpeed(value) {
+    return pad.top + (1 - ((value - minSpeed) / (maxSpeed - minSpeed))) * plotH;
+  }
+
+  function yCongestion(value) {
+    return pad.top + (1 - Math.min(100, Math.max(0, value)) / 100) * plotH;
+  }
+
+  const speedPoints = history.map(function(item, index) {
+    return x(index).toFixed(1) + "," + ySpeed(Number(item.averageSpeed) || 0).toFixed(1);
+  }).join(" ");
+
+  const congestionPoints = history.map(function(item, index) {
+    return x(index).toFixed(1) + "," + yCongestion(Number(item.congestedRatio) || 0).toFixed(1);
+  }).join(" ");
+
+  const gridValues = [0, 25, 50, 75, 100];
+  const grid = gridValues.map(function(value) {
+    const y = yCongestion(value).toFixed(1);
+    return (
+      '<line x1="' + pad.left + '" y1="' + y + '" x2="' + (width - pad.right) + '" y2="' + y + '" class="history-grid-line" />' +
+      '<text x="' + (pad.left - 10) + '" y="' + (Number(y) + 4) + '" text-anchor="end" class="history-axis-label">' + value + '%</text>'
+    );
+  }).join("");
+
+  const xLabels = history.map(function(item, index) {
+    if (
+      history.length > 12 &&
+      index % Math.ceil(history.length / 6) !== 0 &&
+      index !== history.length - 1
+    ) {
+      return "";
+    }
+    return (
+      '<text x="' + x(index) + '" y="' + (height - 14) +
+      '" text-anchor="middle" class="history-axis-label">' +
+      escapeHtml(formatHistoryDate(item.fetchedAt)) +
+      '</text>'
+    );
+  }).join("");
+
+  const selectedIndex = history.findIndex(function(item) {
+    return item.fetchedAt === state.selectedHistoryAt;
+  });
+
+  const fallbackIndex = history.length - 1;
+  const selected = selectedIndex >= 0 ? history[selectedIndex] : history[fallbackIndex];
+
+  historyChart.innerHTML =
+    '<svg class="history-svg" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="부산 교통 평균속도와 정체율 시계열">' +
+      grid +
+      '<line x1="' + pad.left + '" y1="' + (pad.top + plotH) + '" x2="' + (width - pad.right) + '" y2="' + (pad.top + plotH) + '" class="history-axis-line" />' +
+      '<polyline points="' + speedPoints + '" class="history-speed-line" fill="none" />' +
+      '<polyline points="' + congestionPoints + '" class="history-congestion-line" fill="none" />' +
+      history.map(function(item, index) {
+        return (
+          '<circle cx="' + x(index) + '"' +
+          ' cy="' + ySpeed(Number(item.averageSpeed) || 0) + '"' +
+          ' r="' + (index === selectedIndex ? 5 : 3) + '"' +
+          ' class="history-speed-point' + (index === selectedIndex ? " selected" : "") + '"' +
+          ' data-history-index="' + index + '" />'
+        );
+      }).join("") +
+      xLabels +
+      '<text x="' + pad.left + '" y="15" class="history-chart-title">평균속도 km/h</text>' +
+      '<text x="' + (width - pad.right) + '" y="15" text-anchor="end" class="history-chart-title">정체율 %</text>' +
+    '</svg>' +
+    '<div class="history-legend">' +
+      '<span><i class="history-legend-speed"></i> 평균속도</span>' +
+      '<span><i class="history-legend-congestion"></i> 정체율</span>' +
+    '</div>';
+
+  renderHistorySummary(selected);
+
+  historyChart.querySelectorAll("[data-history-index]").forEach(function(point) {
+    point.addEventListener("click", function() {
+      const index = Number(point.dataset.historyIndex);
+      const item = state.history[index];
+      if (!item) return;
+      state.selectedHistoryAt = item.fetchedAt || "";
+      if (historySelect) historySelect.value = state.selectedHistoryAt;
+      renderHistoryChart(state.history);
+    });
+  });
+}
+
+function renderHistorySelect(history) {
+  if (!historySelect) return;
+
+  if (!Array.isArray(history) || history.length === 0) {
+    historySelect.innerHTML = '<option value="">아직 시계열 데이터 없음</option>';
+    return;
+  }
+
+  historySelect.innerHTML = history.map(function(item) {
+    return (
+      '<option value="' + escapeHtml(item.fetchedAt || "") + '">' +
+      escapeHtml(formatHistoryDate(item.fetchedAt)) +
+      ' · ' + formatNumber(item.averageSpeed, 1) + ' km/h' +
+      ' · 정체 ' + formatNumber(item.congestedRatio, 1) + '%' +
+      '</option>'
+    );
+  }).join("");
+
+  if (
+    !state.selectedHistoryAt ||
+    !history.some(function(item) { return item.fetchedAt === state.selectedHistoryAt; })
+  ) {
+    state.selectedHistoryAt = history[history.length - 1].fetchedAt || "";
+  }
+
+  historySelect.value = state.selectedHistoryAt;
+}
+
+async function loadTrafficHistory() {
+  if (state.historyLoading) return;
+
+  state.historyLoading = true;
+  if (historyMessage) historyMessage.textContent = "완성된 교통 수집 이력을 불러오는 중입니다...";
+  if (historyRefreshButton) historyRefreshButton.disabled = true;
+
+  try {
+    const response = await fetch("/api/traffic-history?limit=96", { cache: "no-store" });
+    const payload = await response.json();
+
+    if (!response.ok || !payload || !payload.ok) {
+      throw new Error((payload && payload.error) || "HTTP " + response.status);
+    }
+
+    state.history = Array.isArray(payload.history) ? payload.history.slice().reverse() : [];
+    renderHistorySelect(state.history);
+    renderHistoryChart(state.history);
+
+    const count = state.history.length;
+    if (historyMessage) {
+      historyMessage.textContent = count > 0
+        ? "총 " + count + "개의 완성된 교통 스냅샷을 보관 중입니다. 각 시점은 부산 전체 수집 사이클 기준입니다."
+        : "아직 완성된 시계열 스냅샷이 없습니다. 수집 사이클 완료 후 자동으로 표시됩니다.";
+    }
+  } catch (error) {
+    state.history = [];
+    renderHistorySelect([]);
+    renderHistoryChart([]);
+    if (historyMessage) {
+      historyMessage.textContent = "시계열 데이터를 불러오지 못했습니다: " + (error && error.message ? error.message : error);
+    }
+  } finally {
+    state.historyLoading = false;
+    if (historyRefreshButton) historyRefreshButton.disabled = false;
+  }
 }
 
 // 4. API 에러 원인 정밀 진단 함수
@@ -349,6 +571,20 @@ function displayError(diag) {
   }
 }
 
+
+if (historySelect) {
+  historySelect.addEventListener("change", function() {
+    state.selectedHistoryAt = historySelect.value;
+    renderHistoryChart(state.history);
+  });
+}
+
+if (historyRefreshButton) {
+  historyRefreshButton.addEventListener("click", function() {
+    loadTrafficHistory();
+  });
+}
+
 // 이벤트 리스너 등록
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -380,3 +616,4 @@ if (onlyCongestedCheck) {
 
 // 최초 실행: 부산 전체 로드
 loadTraffic("busan");
+loadTrafficHistory();
