@@ -568,6 +568,93 @@ h1 {
   margin: 14px 0 0;
 }
 
+
+/* 4. 급격한 정체 감지 */
+.sudden-badge {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.sudden-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.sudden-item {
+  display: grid;
+  grid-template-columns: 34px minmax(220px, 1fr) 110px 110px 110px;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.sudden-rank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sudden-main {
+  min-width: 0;
+}
+
+.sudden-road {
+  display: block;
+  color: #ffffff;
+  font-size: 14px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sudden-section {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sudden-current,
+.sudden-baseline,
+.sudden-drop {
+  text-align: right;
+}
+
+.sudden-current span,
+.sudden-baseline span,
+.sudden-drop span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-bottom: 2px;
+}
+
+.sudden-current strong,
+.sudden-baseline strong {
+  color: #ffffff;
+  font-size: 13px;
+}
+
+.sudden-drop strong {
+  display: block;
+  color: #f87171;
+  font-size: 14px;
+}
+
 /* 5. Panel & Table */
 .panel {
   background: var(--bg-card);
@@ -746,6 +833,17 @@ tbody tr:hover {
 }
 
 @media (max-width: 600px) {
+  .sudden-item {
+    grid-template-columns: 28px 1fr;
+  }
+
+  .sudden-current,
+  .sudden-baseline,
+  .sudden-drop {
+    text-align: left;
+    grid-column: 2;
+  }
+
   .history-select {
     width: 100%;
     min-width: 0;
