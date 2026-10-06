@@ -188,6 +188,7 @@ export async function onRequestGet(context) {
       fetchedAt: snapshot.fetchedAt || null,
       stats: snapshot.stats || null,
       suddenCongestion: snapshot.suddenCongestion || null,
+      trafficBriefing: snapshot.trafficBriefing || null,
       totalCount: Number(snapshot.totalCount || snapshot.rows.length),
       returnedRows: rows.length,
       data: rows,
