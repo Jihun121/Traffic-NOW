@@ -6,6 +6,12 @@
   <title>Traffic NOW - 부산 실시간 교통정보</title>
   <meta name="description" content="부산광역시 및 국토부 ITS 연계 실시간 교통 분석 대시보드">
   <link rel="stylesheet" href="/style.css">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
 </head>
 <body>
   <main class="app">
@@ -258,6 +264,35 @@
       </div>
     </section>
 
+    <!-- 4. 실시간 교통 지도 -->
+    <section class="section-container">
+      <div class="section-title-wrap">
+        <div>
+          <h2>🗺️ 실시간 교통 지도</h2>
+          <p class="section-desc">좌표가 제공되는 부산 교통 링크를 상태별로 지도에 표시합니다.</p>
+        </div>
+        <span class="top10-badge map-badge">LIVE MAP</span>
+      </div>
+
+      <div class="card map-panel">
+        <div id="trafficMap" class="traffic-map" aria-label="부산 실시간 교통 지도"></div>
+        <div class="map-toolbar">
+          <div class="map-legend">
+            <span><i class="map-legend-dot smooth"></i> 원활</span>
+            <span><i class="map-legend-dot slow"></i> 서행</span>
+            <span><i class="map-legend-dot congested"></i> 정체</span>
+          </div>
+          <div class="map-actions">
+            <button type="button" id="mapAllButton" class="tab-btn active">전체</button>
+            <button type="button" id="mapCongestedButton" class="tab-btn">정체·서행</button>
+          </div>
+        </div>
+        <div id="mapMessage" class="map-message">
+          지도를 준비하고 있습니다...
+        </div>
+      </div>
+    </section>
+
     <!-- 4. 도로별 상세 조회 및 필터 테이블 -->
     <section class="section-container panel">
       <div class="panel-header">
@@ -325,6 +360,11 @@
     </footer>
   </main>
 
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9coq0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
