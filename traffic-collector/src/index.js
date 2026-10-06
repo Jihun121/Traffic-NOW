@@ -15,7 +15,8 @@ const HISTORY_KEY_PREFIX = "traffic:busan:history:";
 const HISTORY_RETENTION_DAYS = 14;
 const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
 const HISTORY_MAX_ENTRIES = 96;
-const BASELINE_KEY = "traffic:busan:baseline";
+const BASELINE_KEY = "traffic:busan:baseline-by-timeband";
+const BASELINE_VERSION = 2;
 const BASELINE_SAMPLE_SIZE = 6;
 const SUDDEN_CONGESTION_MIN_SAMPLES = 3;
 const SUDDEN_CONGESTION_MIN_DROP_KMH = 10;
@@ -183,6 +184,33 @@ function getTrafficRowKey(row) {
   return `section:${row.roadName || ""}|${row.sectionName || ""}|${row.startName || ""}|${row.endName || ""}`;
 }
 
+function getKoreaHour(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+
+  const hourPart = parts.find((part) => part.type === "hour")?.value;
+  const hour = Number(hourPart);
+
+  return Number.isInteger(hour) ? hour : new Date(date).getUTCHours() + 9;
+}
+
+function getTimeBand(hour) {
+  const normalizedHour = ((Number(hour) % 24) + 24) % 24;
+  const index = Math.floor(normalizedHour / 3);
+  const startHour = index * 3;
+  const endHour = (startHour + 3) % 24;
+
+  return {
+    key: `band-${index}`,
+    index,
+    startHour,
+    endHour
+  };
+}
+
 function median(values) {
   const sorted = values
     .map(Number)
@@ -198,9 +226,20 @@ function median(values) {
 
 async function calculateAndUpdateSuddenCongestion(env, rows) {
   const baseline = (await env.TRAFFIC_CACHE.get(BASELINE_KEY, "json")) || {};
-  const baselineMap = baseline && typeof baseline === "object" && !Array.isArray(baseline)
-    ? baseline
-    : {};
+  const baselineBuckets =
+    baseline?.version === BASELINE_VERSION && baseline?.buckets &&
+    typeof baseline.buckets === "object" && !Array.isArray(baseline.buckets)
+      ? baseline.buckets
+      : {};
+
+  const now = new Date();
+  const koreaHour = getKoreaHour(now);
+  const timeBand = getTimeBand(koreaHour);
+  const currentBucket = baselineBuckets[timeBand.key] &&
+    typeof baselineBuckets[timeBand.key] === "object" &&
+    !Array.isArray(baselineBuckets[timeBand.key])
+      ? baselineBuckets[timeBand.key]
+      : {};
 
   const alerts = [];
 
@@ -209,9 +248,12 @@ async function calculateAndUpdateSuddenCongestion(env, rows) {
     if (!Number.isFinite(speed) || speed < 0) continue;
 
     const key = getTrafficRowKey(row);
-    const previous = baselineMap[key];
+    const previous = currentBucket[key];
     const samples = Array.isArray(previous?.samples)
-      ? previous.samples.map(Number).filter(Number.isFinite).slice(-BASELINE_SAMPLE_SIZE)
+      ? previous.samples
+          .map(Number)
+          .filter(Number.isFinite)
+          .slice(-BASELINE_SAMPLE_SIZE)
       : [];
 
     if (samples.length >= SUDDEN_CONGESTION_MIN_SAMPLES) {
@@ -246,33 +288,49 @@ async function calculateAndUpdateSuddenCongestion(env, rows) {
     return b.dropKmh - a.dropKmh;
   });
 
-  const nextBaseline = {};
+  const nextBuckets = { ...baselineBuckets };
+  const nextBucket = { ...currentBucket };
+
   for (const row of rows) {
     const speed = Number(row.speed);
     if (!Number.isFinite(speed) || speed < 0) continue;
 
     const key = getTrafficRowKey(row);
-    const previousSamples = Array.isArray(baselineMap[key]?.samples)
-      ? baselineMap[key].samples.map(Number).filter(Number.isFinite).slice(-BASELINE_SAMPLE_SIZE + 1)
+    const previousSamples = Array.isArray(nextBucket[key]?.samples)
+      ? nextBucket[key].samples
+          .map(Number)
+          .filter(Number.isFinite)
+          .slice(-BASELINE_SAMPLE_SIZE + 1)
       : [];
 
-    nextBaseline[key] = {
+    nextBucket[key] = {
       linkId: row.linkId || "",
       roadName: row.roadName || "",
       samples: [...previousSamples, speed],
-      updatedAt: new Date().toISOString()
+      updatedAt: now.toISOString()
     };
   }
 
-  await env.TRAFFIC_CACHE.put(BASELINE_KEY, JSON.stringify(nextBaseline), {
-    expirationTtl: HISTORY_RETENTION_TTL
-  });
+  nextBuckets[timeBand.key] = nextBucket;
+
+  await env.TRAFFIC_CACHE.put(
+    BASELINE_KEY,
+    JSON.stringify({
+      version: BASELINE_VERSION,
+      updatedAt: now.toISOString(),
+      currentTimeBand: timeBand,
+      buckets: nextBuckets
+    }),
+    { expirationTtl: HISTORY_RETENTION_TTL }
+  );
 
   return {
     detectedCount: alerts.length,
     items: alerts.slice(0, SUDDEN_CONGESTION_MAX_RESULTS),
     baselineSampleSize: BASELINE_SAMPLE_SIZE,
     minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
+    mode: "same-timeband-baseline",
+    timeBand,
     thresholds: {
       minimumDropKmh: SUDDEN_CONGESTION_MIN_DROP_KMH,
       minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
