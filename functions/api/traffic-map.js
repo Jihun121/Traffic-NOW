@@ -1,7 +1,7 @@
 import { filterTrafficRegion } from "../lib/filterTrafficRegion.js";
 
 const SNAPSHOT_KEY = "traffic:busan:latest";
-const MAP_ROW_LIMIT = 1500;
+const MAP_ROW_LIMIT = 10000;
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -14,28 +14,21 @@ function json(data, status = 200, extraHeaders = {}) {
   });
 }
 
-function validLat(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 33 && number <= 39.5 ? number : null;
-}
-
-function validLng(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 124 && number <= 132.5 ? number : null;
-}
-
-function hasMapGeometry(row) {
-  const pointLat = validLat(row?.latitude);
-  const pointLng = validLng(row?.longitude);
-
-  if (pointLat !== null && pointLng !== null) return true;
-
-  return (
-    validLat(row?.startLatitude) !== null &&
-    validLng(row?.startLongitude) !== null &&
-    validLat(row?.endLatitude) !== null &&
-    validLng(row?.endLongitude) !== null
-  );
+function normalizeMapRow(row) {
+  return {
+    linkId: row.linkId || "",
+    roadName: row.roadName || "",
+    sectionName: row.sectionName || "",
+    startName: row.startName || "",
+    endName: row.endName || "",
+    speed: Number(row.speed),
+    status: row.status || "UNKNOWN",
+    statusText: row.statusText || "정보 없음",
+    statusColor: row.statusColor || "",
+    category: row.category || "",
+    categoryName: row.categoryName || "일반도로",
+    updatedAt: row.updatedAt || ""
+  };
 }
 
 export async function onRequestGet(context) {
@@ -68,8 +61,8 @@ export async function onRequestGet(context) {
 
     const filteredRows = filterTrafficRegion(snapshot.rows, regionKey);
     const mapRows = filteredRows
-      .filter(hasMapGeometry)
-      .slice(0, MAP_ROW_LIMIT);
+      .slice(0, MAP_ROW_LIMIT)
+      .map(normalizeMapRow);
 
     return json({
       ok: true,
@@ -77,14 +70,16 @@ export async function onRequestGet(context) {
       region: regionKey,
       fetchedAt: snapshot.fetchedAt || null,
       totalRows: filteredRows.length,
-      coordinateRows: mapRows.length,
+      returnedRows: mapRows.length,
+      mapRowLimit: MAP_ROW_LIMIT,
+      geometrySource: "/data/traffic-link-geometry.json",
       data: mapRows,
       timing: {
         totalMs: Date.now() - startedAt
       }
     }, 200, {
       "cache-control": "public, max-age=0, s-maxage=15",
-      "X-Traffic-Map": "SNAPSHOT"
+      "X-Traffic-Map": "SNAPSHOT+STATIC_GEOMETRY"
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
