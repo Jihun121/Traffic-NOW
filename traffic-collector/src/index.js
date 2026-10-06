@@ -459,7 +459,13 @@ async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
     endName: row.endName || "",
     speed: Number(row.speed),
     status: row.status || "UNKNOWN",
-    category: row.category || ""
+    category: row.category || "",
+    latitude: Number.isFinite(Number(row.latitude)) ? Number(row.latitude) : null,
+    longitude: Number.isFinite(Number(row.longitude)) ? Number(row.longitude) : null,
+    startLatitude: Number.isFinite(Number(row.startLatitude)) ? Number(row.startLatitude) : null,
+    startLongitude: Number.isFinite(Number(row.startLongitude)) ? Number(row.startLongitude) : null,
+    endLatitude: Number.isFinite(Number(row.endLatitude)) ? Number(row.endLatitude) : null,
+    endLongitude: Number.isFinite(Number(row.endLongitude)) ? Number(row.endLongitude) : null
   }));
 
   const historyEntry = {
