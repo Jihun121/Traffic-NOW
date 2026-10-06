@@ -660,7 +660,77 @@ h1 {
   font-size: 14px;
 }
 
-/* 5. Panel & Table */
+
+/* 5. 오늘 부산 교통 브리핑 */
+.briefing-badge {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.briefing-badge.briefing-worsening {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.briefing-badge.briefing-improving {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.briefing-panel {
+  padding: 20px;
+}
+
+.briefing-headline {
+  display: block;
+  color: #ffffff;
+  font-size: 18px;
+  line-height: 1.35;
+  margin-bottom: 8px;
+}
+
+.briefing-summary {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  margin-bottom: 16px;
+}
+
+.briefing-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.briefing-metric {
+  background: #162235;
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  border-radius: 9px;
+  padding: 12px;
+}
+
+.briefing-metric span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-bottom: 5px;
+}
+
+.briefing-metric strong {
+  color: #ffffff;
+  font-size: 15px;
+}
+
+.briefing-meta {
+  margin-top: 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* 6. Panel & Table */
 .panel {
   background: var(--bg-card);
 }
@@ -835,6 +905,10 @@ tbody tr:hover {
   .summary-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  .briefing-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 @media (max-width: 600px) {
@@ -855,6 +929,10 @@ tbody tr:hover {
   }
 
   .history-summary-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .briefing-metrics {
     grid-template-columns: 1fr 1fr;
   }
 
