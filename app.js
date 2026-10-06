@@ -52,6 +52,14 @@ const historyCongestionLevel = document.querySelector("#historyCongestionLevel")
 const historyFetchedAt = document.querySelector("#historyFetchedAt");
 const historyMessage = document.querySelector("#historyMessage");
 const suddenCongestionContainer = document.querySelector("#suddenCongestionContainer");
+const briefingTrendBadge = document.querySelector("#briefingTrendBadge");
+const briefingHeadline = document.querySelector("#briefingHeadline");
+const briefingSummary = document.querySelector("#briefingSummary");
+const briefingIndexDelta = document.querySelector("#briefingIndexDelta");
+const briefingSpeedDelta = document.querySelector("#briefingSpeedDelta");
+const briefingCongestionDelta = document.querySelector("#briefingCongestionDelta");
+const briefingSuddenCount = document.querySelector("#briefingSuddenCount");
+const briefingMeta = document.querySelector("#briefingMeta");
 
 function setStatus(text, active = false) {
   if (statusText) statusText.textContent = text;
@@ -219,6 +227,72 @@ function renderTable() {
 }
 
 
+
+
+function formatDelta(value, unit, invert = false) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+
+  const effective = invert ? -number : number;
+  if (effective === 0) return "변화 없음";
+
+  const sign = effective > 0 ? "+" : "-";
+  return sign + formatNumber(Math.abs(number), 1) + unit;
+}
+
+function renderTrafficBriefing(briefing) {
+  if (!briefing) {
+    if (briefingHeadline) briefingHeadline.textContent = "아직 비교할 과거 교통 사이클이 없습니다.";
+    if (briefingSummary) briefingSummary.textContent = "첫 번째 완성 스냅샷이 저장되면 이후 사이클부터 자동 브리핑이 생성됩니다.";
+    if (briefingTrendBadge) briefingTrendBadge.textContent = "FIRST SNAPSHOT";
+    if (briefingIndexDelta) briefingIndexDelta.textContent = "-";
+    if (briefingSpeedDelta) briefingSpeedDelta.textContent = "-";
+    if (briefingCongestionDelta) briefingCongestionDelta.textContent = "-";
+    if (briefingSuddenCount) briefingSuddenCount.textContent = "-";
+    return;
+  }
+
+  const metrics = briefing.metrics || {};
+  const trend = briefing.trend || "유지";
+
+  if (briefingHeadline) briefingHeadline.textContent = briefing.headline || "부산 교통 브리핑";
+  if (briefingSummary) briefingSummary.textContent = briefing.summary || "-";
+
+  if (briefingTrendBadge) {
+    briefingTrendBadge.textContent = trend === "악화"
+      ? "WORSENING"
+      : trend === "개선"
+        ? "IMPROVING"
+        : "STABLE";
+
+    briefingTrendBadge.classList.toggle("briefing-worsening", trend === "악화");
+    briefingTrendBadge.classList.toggle("briefing-improving", trend === "개선");
+  }
+
+  if (briefingIndexDelta) {
+    briefingIndexDelta.textContent = formatDelta(metrics.trafficIndexDelta, "점");
+  }
+
+  if (briefingSpeedDelta) {
+    briefingSpeedDelta.textContent = formatDelta(metrics.averageSpeedDelta, " km/h");
+  }
+
+  if (briefingCongestionDelta) {
+    briefingCongestionDelta.textContent = formatDelta(metrics.congestedRatioDelta, "%p");
+  }
+
+  if (briefingSuddenCount) {
+    briefingSuddenCount.textContent = Number.isFinite(Number(metrics.suddenCongestionCount))
+      ? Number(metrics.suddenCongestionCount).toLocaleString("ko-KR") + "개"
+      : "-";
+  }
+
+  if (briefingMeta) {
+    briefingMeta.textContent =
+      "분석 기준: 직전 완성 교통 수집 사이클 · 생성 시각: " +
+      formatHistoryDate(briefing.generatedAt);
+  }
+}
 
 function renderSuddenCongestion(sudden) {
   if (!suddenCongestionContainer) return;
@@ -611,6 +685,7 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     renderStats(state.stats, payload.updatedAt);
     renderTop10(state.top10);
     renderSuddenCongestion(state.suddenCongestion);
+    renderTrafficBriefing(payload.trafficBriefing || null);
     renderTable();
 
     const cacheLabel = payload.cache === "SNAPSHOT" ? "백그라운드 스냅샷" : "스냅샷";
