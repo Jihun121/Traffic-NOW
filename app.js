@@ -389,7 +389,13 @@ async function loadTrafficMap(regionKey) {
     state.mapRows = Array.isArray(payload.data) ? payload.data : [];
     state.mapTotalRows = Number(payload.totalRows || state.mapRows.length);
 
-    renderTrafficMap(state.mapRows);
+    const rendered = renderTrafficMap(state.mapRows);
+
+    // Leaflet 초기화/렌더링에 실패한 경우 여기서 종료한다.
+    // 그렇지 않으면 아래의 geometry 통계 문구가 실제 지도 실패 메시지를 덮어쓴다.
+    if (!rendered) {
+      return;
+    }
 
     const matchedInSnapshot = state.mapRows.filter(function(row) {
       return Boolean(geometry[String(row.linkId || "")]);
@@ -428,7 +434,16 @@ function getMapStatusColor(status) {
 }
 
 function ensureTrafficMap() {
-  if (!trafficMap || !window.L) return false;
+  if (!trafficMap) return false;
+
+  if (!window.L) {
+    if (mapMessage) {
+      mapMessage.textContent =
+        "Leaflet 지도 라이브러리를 불러오지 못했습니다. 브라우저의 네트워크/확장 프로그램 또는 CDN 차단 여부를 확인해야 합니다.";
+    }
+    console.error("[Traffic Map] Leaflet(window.L) is not available.");
+    return false;
+  }
 
   if (!state.map) {
     state.map = window.L.map(trafficMap, {
@@ -436,13 +451,23 @@ function ensureTrafficMap() {
       preferCanvas: true
     }).setView([35.1796, 129.0756], 11);
 
-    window.L.tileLayer(
+    const tileLayer = window.L.tileLayer(
       "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
       {
         maxZoom: 19,
         attribution: "&copy; OpenStreetMap contributors"
       }
-    ).addTo(state.map);
+    );
+
+    tileLayer.on("tileerror", function(event) {
+      console.warn("[Traffic Map] Base map tile failed to load:", event && event.tile);
+      if (mapMessage) {
+        mapMessage.textContent =
+          "도로 데이터는 준비됐지만 배경지도 타일을 불러오지 못했습니다. 네트워크 또는 지도 타일 서버 접근을 확인하세요.";
+      }
+    });
+
+    tileLayer.addTo(state.map);
 
     state.mapLayer = window.L.layerGroup().addTo(state.map);
 
@@ -455,11 +480,10 @@ function ensureTrafficMap() {
 }
 
 function renderTrafficMap(rows) {
-  if (!trafficMap) return;
+  if (!trafficMap) return false;
 
   if (!ensureTrafficMap()) {
-    if (mapMessage) mapMessage.textContent = "지도 라이브러리를 불러오지 못했습니다.";
-    return;
+    return false;
   }
 
   // 수천 개의 개별 Leaflet 레이어를 동시에 생성하면 브라우저 렌더링이 크게 느려질 수 있다.
@@ -619,6 +643,8 @@ function renderTrafficMap(rows) {
         "개) · 렌더링 최적화 적용";
     }
   }
+
+  return plottedLines > 0;
 }
 
 function formatCommuteDelta(value, unit) {
