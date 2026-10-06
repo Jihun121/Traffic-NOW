@@ -1,5 +1,6 @@
 const HISTORY_INDEX_KEY = "traffic:busan:history:index";
 const DEFAULT_SAMPLE_LIMIT = 7;
+const MIN_BASELINE_SAMPLES = 3;
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -102,6 +103,25 @@ function buildComparison(period, entries) {
   const latest = candidates[0];
   const previous = candidates.slice(1, DEFAULT_SAMPLE_LIMIT + 1);
 
+  if (previous.length < MIN_BASELINE_SAMPLES) {
+    return {
+      key: period.key,
+      label: period.label,
+      available: false,
+      message: "같은 시간대의 과거 데이터가 아직 충분하지 않습니다.",
+      latest: {
+        fetchedAt: latest.fetchedAt,
+        averageSpeed: Number(latest.averageSpeed),
+        trafficIndex: Number(latest.trafficIndex),
+        congestedRatio: Number(latest.congestedRatio)
+      },
+      baseline: {
+        sampleCount: previous.length,
+        requiredSamples: MIN_BASELINE_SAMPLES
+      }
+    };
+  }
+
   const baselineSpeed = median(previous.map((entry) => entry?.averageSpeed));
   const baselineIndex = median(previous.map((entry) => entry?.trafficIndex));
   const baselineCongestedRatio = median(previous.map((entry) => entry?.congestedRatio));
@@ -190,7 +210,7 @@ export async function onRequestGet(context) {
         morning,
         evening
       },
-      note: "각 시간대의 최근 완성 스냅샷을 같은 시간대의 과거 최대 7개 샘플 중앙값과 비교합니다.",
+      note: "각 시간대의 최근 완성 스냅샷을 같은 시간대의 과거 최대 7개 샘플 중앙값과 비교합니다. 비교에는 최소 3개의 과거 샘플이 필요합니다.",
       timing: {
         totalMs: Date.now() - startedAt
       }
