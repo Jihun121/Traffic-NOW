@@ -181,6 +181,11 @@ h1 {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
+.traffic-index-card {
+  border-color: rgba(59, 130, 246, 0.4);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.08) 0%, var(--bg-card) 62%);
+}
+
 .stat-card {
   display: flex;
   flex-direction: column;
