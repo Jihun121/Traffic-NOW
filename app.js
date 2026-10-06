@@ -467,7 +467,7 @@ function ensureTrafficMap() {
       tiles,
       svg,
       popup,
-      zoom: 10.8,
+      zoom: 11,
       center: { lng: 129.0756, lat: 35.1796 },
       dragging: false,
       dragX: 0,
@@ -481,7 +481,7 @@ function ensureTrafficMap() {
       const width = rect.width;
       const height = rect.height;
       const oldZoom = state.map.zoom;
-      const targetZoom = Math.max(8.5, Math.min(14.5, oldZoom + delta));
+      const targetZoom = Math.max(8, Math.min(15, Math.round(oldZoom + delta)));
       if (targetZoom === oldZoom) return;
 
       const cursorX = Number.isFinite(clientX) ? clientX - rect.left : width / 2;
@@ -505,7 +505,7 @@ function ensureTrafficMap() {
 
     canvas.addEventListener("wheel", function(event) {
       event.preventDefault();
-      zoomTo(event.deltaY < 0 ? 0.5 : -0.5, event.clientX, event.clientY);
+      zoomTo(event.deltaY < 0 ? 1 : -1, event.clientX, event.clientY);
     }, { passive: false });
 
     canvas.addEventListener("pointerdown", function(event) {
@@ -548,7 +548,7 @@ function ensureTrafficMap() {
     canvas.addEventListener("click", function(event) {
       const zoomButton = event.target.closest("[data-map-zoom]");
       if (!zoomButton) return;
-      zoomTo(zoomButton.dataset.mapZoom === "in" ? 0.75 : -0.75);
+      zoomTo(zoomButton.dataset.mapZoom === "in" ? 1 : -1);
     });
 
     window.addEventListener("resize", function() {
@@ -570,7 +570,7 @@ function renderMapTiles() {
   const height = canvas.clientHeight;
   if (!width || !height) return;
 
-  const tileZoom = Math.floor(state.map.zoom);
+  const tileZoom = Math.round(state.map.zoom);
   const scale = Math.pow(2, state.map.zoom - tileZoom);
   const tileSize = 256;
   const centerTileWorld = mapProject(state.map.center.lng, state.map.center.lat, tileZoom);
@@ -589,7 +589,7 @@ function renderMapTiles() {
       const wrappedX = ((tx % maxTile) + maxTile) % maxTile;
       const left = tx * tileSize * scale - centerFracX + width / 2;
       const top = ty * tileSize * scale - centerFracY + height / 2;
-      html += '<img class="traffic-map-tile" alt="" draggable="false" ' +
+      html += '<img class="traffic-map-tile" alt="" draggable="false" decoding="async" ' +
         'src="https://tile.openstreetmap.org/' + tileZoom + '/' + wrappedX + '/' + ty + '.png" ' +
         'style="width:' + (tileSize * scale) + 'px;height:' + (tileSize * scale) +
         'px;left:' + left + 'px;top:' + top + 'px">';
