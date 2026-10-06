@@ -387,7 +387,188 @@ h1 {
   color: var(--text-dim);
 }
 
-/* 4. Panel & Table */
+
+/* 4. 교통 타임머신 */
+.history-badge {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.history-panel {
+  padding: 18px;
+}
+
+.history-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.history-label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.history-select {
+  min-width: 360px;
+  max-width: 100%;
+  background: #0f172a;
+  color: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  outline: none;
+}
+
+.history-select:focus {
+  border-color: var(--color-primary);
+}
+
+.history-refresh:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.history-chart-wrap {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: #111b2d;
+  overflow-x: auto;
+}
+
+.history-chart {
+  min-width: 700px;
+  min-height: 300px;
+}
+
+.history-svg {
+  display: block;
+  width: 100%;
+  min-width: 700px;
+  height: auto;
+}
+
+.history-grid-line {
+  stroke: rgba(148, 163, 184, 0.14);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+}
+
+.history-axis-line {
+  stroke: rgba(148, 163, 184, 0.24);
+  stroke-width: 1;
+}
+
+.history-axis-label,
+.history-chart-title {
+  fill: var(--text-dim);
+  font-size: 10px;
+}
+
+.history-chart-title {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.history-speed-line {
+  stroke: #38bdf8;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.history-congestion-line {
+  stroke: #f87171;
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  stroke-dasharray: 6 4;
+}
+
+.history-speed-point {
+  fill: #38bdf8;
+  stroke: #0f172a;
+  stroke-width: 1.5;
+  cursor: pointer;
+}
+
+.history-speed-point:hover,
+.history-speed-point.selected {
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.history-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 8px 12px 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.history-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-legend i {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 99px;
+}
+
+.history-legend-speed {
+  background: #38bdf8;
+}
+
+.history-legend-congestion {
+  background: #f87171;
+}
+
+.history-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.history-metric {
+  background: #162235;
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  border-radius: 9px;
+  padding: 12px;
+}
+
+.history-metric span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-bottom: 5px;
+}
+
+.history-metric strong {
+  color: #ffffff;
+  font-size: 15px;
+}
+
+.history-message {
+  margin: 14px 0 0;
+}
+
+/* 5. Panel & Table */
 .panel {
   background: var(--bg-card);
 }
@@ -565,6 +746,15 @@ tbody tr:hover {
 }
 
 @media (max-width: 600px) {
+  .history-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .history-summary-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .hero {
     flex-direction: column;
     align-items: flex-start;
