@@ -10,6 +10,11 @@ const PAGES_PER_RUN = 3;
 const REQUEST_TIMEOUT_MS = 60000;
 const LATEST_SNAPSHOT_TTL = 60 * 60 * 12;
 const COLLECTION_TTL = 60 * 60 * 8;
+const HISTORY_INDEX_KEY = "traffic:busan:history:index";
+const HISTORY_KEY_PREFIX = "traffic:busan:history:";
+const HISTORY_RETENTION_DAYS = 14;
+const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
+const HISTORY_MAX_ENTRIES = 96;
 
 function getApiKey(rawKey) {
   const raw = String(rawKey || "").trim();
@@ -164,6 +169,72 @@ function calculateBusanStats(rows) {
     statusRatios: { smooth: smoothRatio, slow: slowRatio, congested: congestedRatio },
     congestionLevel,
     slowestRoad
+  };
+}
+
+async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
+  const fetchedAt = snapshot.fetchedAt || new Date().toISOString();
+  const cycleId = fetchedAt.replace(/[-:.TZ]/g, "");
+  const historyKey = `${HISTORY_KEY_PREFIX}${cycleId}`;
+
+  // 시계열 분석에 필요한 핵심 필드만 저장해 현재 latest 스냅샷의 중복을 최소화한다.
+  const historyRows = busanRows.map((row) => ({
+    linkId: row.linkId || "",
+    roadName: row.roadName || "",
+    startName: row.startName || "",
+    endName: row.endName || "",
+    speed: Number(row.speed),
+    status: row.status || "UNKNOWN",
+    category: row.category || ""
+  }));
+
+  const historyEntry = {
+    version: 1,
+    fetchedAt,
+    source: "부산광역시 링크소통정보",
+    totalCount: historyRows.length,
+    reportedTotalCount: Number(snapshot.collection?.reportedTotalCount || historyRows.length),
+    totalPages: Number(snapshot.collection?.totalPages || 0),
+    stats: calculateBusanStats(historyRows),
+    rows: historyRows
+  };
+
+  await env.TRAFFIC_CACHE.put(
+    historyKey,
+    JSON.stringify(historyEntry),
+    { expirationTtl: HISTORY_RETENTION_TTL }
+  );
+
+  const existingIndex = (await env.TRAFFIC_CACHE.get(HISTORY_INDEX_KEY, "json")) || [];
+  const indexEntries = Array.isArray(existingIndex) ? existingIndex : [];
+  const cutoff = Date.now() - HISTORY_RETENTION_TTL * 1000;
+
+  const nextIndex = [
+    ...indexEntries.filter((entry) => {
+      const timestamp = Date.parse(entry?.fetchedAt || "");
+      return Number.isFinite(timestamp) && timestamp >= cutoff;
+    }),
+    {
+      key: historyKey,
+      fetchedAt,
+      totalCount: historyRows.length,
+      averageSpeed: historyEntry.stats.averageSpeed,
+      congestedRatio: historyEntry.stats.statusRatios.congested
+    }
+  ]
+    .sort((a, b) => Date.parse(b.fetchedAt) - Date.parse(a.fetchedAt))
+    .slice(0, HISTORY_MAX_ENTRIES);
+
+  await env.TRAFFIC_CACHE.put(
+    HISTORY_INDEX_KEY,
+    JSON.stringify(nextIndex),
+    { expirationTtl: HISTORY_RETENTION_TTL }
+  );
+
+  return {
+    historyKey,
+    historyEntries: nextIndex.length,
+    historyRows: historyRows.length
   };
 }
 
@@ -601,6 +672,23 @@ export default {
         expirationTtl: LATEST_SNAPSHOT_TTL
       });
 
+      // 완성된 부산 전체 사이클을 시계열 이력으로 보관한다.
+      // 이력 저장 실패가 최신 스냅샷 제공을 막지 않도록 별도로 처리한다.
+      try {
+        const historyResult = await archiveHistoricalSnapshot(env, snapshot, accumulator);
+        console.log({
+          event: "collector-history-write-success",
+          historyKey: historyResult.historyKey,
+          historyEntries: historyResult.historyEntries,
+          historyRows: historyResult.historyRows
+        });
+      } catch (historyError) {
+        console.warn({
+          event: "collector-history-write-failed",
+          error: historyError?.message || String(historyError)
+        });
+      }
+
       await env.TRAFFIC_CACHE.delete(COLLECTOR_ACCUMULATOR_KEY);
 
       await env.TRAFFIC_CACHE.put(
@@ -627,7 +715,8 @@ export default {
         warning: snapshot.warning,
         busanReportedTotalCount: reportedTotalCount,
         totalPages,
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        historyRetentionDays: HISTORY_RETENTION_DAYS
       });
     } catch (error) {
       console.error({ event: "collector-failed", error: error?.message || error });
