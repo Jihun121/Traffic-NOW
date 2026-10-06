@@ -333,68 +333,98 @@ export default {
       let currentPage = Number(state?.currentPage || 1);
       let totalPages = Number(state?.totalPages || 0);
       let reportedTotalCount = Number(state?.reportedTotalCount || 0);
+      const cycleInProgress = state?.inProgress === true;
 
       if (!Number.isInteger(currentPage) || currentPage < 1) currentPage = 1;
 
+      let completedPages = new Set(
+        Array.isArray(state?.completedPages)
+          ? state.completedPages
+              .map((page) => Number(page))
+              .filter((page) => Number.isInteger(page) && page >= 1)
+          : []
+      );
+
+      let failedPages = new Set(
+        Array.isArray(state?.failedPages)
+          ? state.failedPages
+              .map((page) => Number(page))
+              .filter((page) => Number.isInteger(page) && page >= 1)
+          : []
+      );
+
       let accumulator = [];
-      if (currentPage > 1) {
+      if (cycleInProgress) {
         accumulator = (await env.TRAFFIC_CACHE.get(COLLECTOR_ACCUMULATOR_KEY, "json")) || [];
         if (!Array.isArray(accumulator)) accumulator = [];
-      }
-
-      let pageNumbers = [];
-      let firstPagePayload = null;
-
-      if (currentPage === 1) {
-        firstPagePayload = await fetchBusanPage(busanApiKey, 1);
-        const firstNormalized = normalizeTrafficPayload(firstPagePayload);
-        reportedTotalCount = Number(firstNormalized.totalCount ?? 0);
-        totalPages = Math.max(1, Math.ceil(reportedTotalCount / PAGE_SIZE));
-
-        for (let page = 1; page <= Math.min(PAGES_PER_RUN, totalPages); page += 1) {
-          pageNumbers.push(page);
-        }
-
-        accumulator = [];
       } else {
-        if (!totalPages) {
-          totalPages = Math.max(1, Math.ceil(reportedTotalCount / PAGE_SIZE));
-        }
+        // 이전 사이클 완료 상태라면 새 사이클을 시작한다.
+        accumulator = [];
+        completedPages = new Set();
+        failedPages = new Set();
+        currentPage = 1;
+      }
 
-        if (currentPage > totalPages) currentPage = 1;
+      const pageNumbers = [];
+      const selectedPages = new Set();
 
-        for (
-          let page = currentPage;
-          page < currentPage + PAGES_PER_RUN && page <= totalPages;
-          page += 1
+      // 실패했던 페이지를 먼저 재시도한다.
+      for (const page of [...failedPages].sort((a, b) => a - b)) {
+        if (pageNumbers.length >= PAGES_PER_RUN) break;
+        if (totalPages > 0 && page > totalPages) continue;
+        pageNumbers.push(page);
+        selectedPages.add(page);
+      }
+
+      // 남은 슬롯은 아직 처리하지 않은 순차 페이지로 채운다.
+      let sequentialPage = currentPage;
+      while (pageNumbers.length < PAGES_PER_RUN) {
+        if (totalPages > 0 && sequentialPage > totalPages) break;
+
+        if (
+          !selectedPages.has(sequentialPage) &&
+          !completedPages.has(sequentialPage) &&
+          !failedPages.has(sequentialPage)
         ) {
-          pageNumbers.push(page);
+          pageNumbers.push(sequentialPage);
+          selectedPages.add(sequentialPage);
         }
+
+        sequentialPage += 1;
+
+        // 비정상 상태로 인한 무한 루프 방지
+        if (sequentialPage > 100000) break;
       }
 
-      const pagePayloads = new Map();
-
-      if (firstPagePayload) {
-        pagePayloads.set(1, firstPagePayload);
+      // 최초 수집 또는 진행 중인 사이클에서 아무 페이지도 선택되지 않는 상태는 방지한다.
+      if (pageNumbers.length === 0 && totalPages === 0) {
+        pageNumbers.push(1);
       }
 
-      const remainingPages = pageNumbers.filter((page) => page !== 1);
-      if (remainingPages.length > 0) {
-        const responses = await Promise.all(
-          remainingPages.map((page) => fetchBusanPage(busanApiKey, page))
-        );
-
-        remainingPages.forEach((page, index) => {
-          pagePayloads.set(page, responses[index]);
-        });
-      }
+      const settledResults = await Promise.allSettled(
+        pageNumbers.map((page) => fetchBusanPage(busanApiKey, page))
+      );
 
       const batchRows = [];
 
-      for (const page of pageNumbers) {
-        const payload = pagePayloads.get(page);
-        if (!payload) continue;
+      for (let index = 0; index < pageNumbers.length; index += 1) {
+        const page = pageNumbers[index];
+        const result = settledResults[index];
 
+        if (result.status === "rejected") {
+          failedPages.add(page);
+          console.warn({
+            event: "collector-page-failed",
+            page,
+            error: result.reason?.message || String(result.reason || "unknown error"),
+            currentPage,
+            totalPages,
+            reportedTotalCount
+          });
+          continue;
+        }
+
+        const payload = result.value;
         const normalized = normalizeTrafficPayload(payload);
         const pageReportedTotal = Number(normalized.totalCount ?? 0);
 
@@ -402,8 +432,14 @@ export default {
           reportedTotalCount = Math.max(reportedTotalCount, pageReportedTotal);
         }
 
+        if (reportedTotalCount > 0) {
+          totalPages = Math.max(1, Math.ceil(reportedTotalCount / PAGE_SIZE));
+        }
+
         const pageRows = normalizeBusanItems(payload);
+
         if (pageRows.length === 0) {
+          failedPages.add(page);
           console.warn({
             event: "collector-page-empty",
             page,
@@ -414,11 +450,17 @@ export default {
         }
 
         batchRows.push(...pageRows);
+        completedPages.add(page);
+        failedPages.delete(page);
       }
 
-      if (batchRows.length === 0) {
-        throw new Error(
-          `BUSAN_TRAFFIC_EMPTY_DATA: 수집한 페이지에서 유효한 교통 데이터가 0건입니다. currentPage=${currentPage}, totalPages=${totalPages}, reportedTotalCount=${reportedTotalCount}`
+      // API가 알려준 총 페이지 범위를 넘어선 오래된 상태값은 제거한다.
+      if (totalPages > 0) {
+        completedPages = new Set(
+          [...completedPages].filter((page) => page <= totalPages)
+        );
+        failedPages = new Set(
+          [...failedPages].filter((page) => page <= totalPages)
         );
       }
 
@@ -440,8 +482,31 @@ export default {
 
       accumulator = Array.from(mergedRows.values());
 
-      const lastCollectedPage = Math.max(...pageNumbers);
-      const cycleComplete = lastCollectedPage >= totalPages;
+      const mergedRows = new Map();
+
+      for (const row of accumulator) {
+        const key = row.linkId
+          ? `link:${row.linkId}`
+          : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
+        mergedRows.set(key, row);
+      }
+
+      for (const row of batchRows) {
+        const key = row.linkId
+          ? `link:${row.linkId}`
+          : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
+        mergedRows.set(key, row);
+      }
+
+      accumulator = Array.from(mergedRows.values());
+
+      const lastCollectedPage = completedPages.size > 0
+        ? Math.max(...completedPages)
+        : 0;
+      const cycleComplete =
+        totalPages > 0 &&
+        completedPages.size >= totalPages &&
+        failedPages.size === 0;
 
       console.log({
         event: "collector-progress",
@@ -451,6 +516,8 @@ export default {
         reportedTotalCount,
         batchRows: batchRows.length,
         accumulatedRows: accumulator.length,
+        completedPages: completedPages.size,
+        failedPages: [...failedPages].sort((a, b) => a - b),
         cycleComplete
       });
 
@@ -461,12 +528,16 @@ export default {
           { expirationTtl: COLLECTION_TTL }
         );
 
+        const nextPage = Math.max(currentPage, sequentialPage);
         await env.TRAFFIC_CACHE.put(
           COLLECTOR_STATE_KEY,
           JSON.stringify({
-            currentPage: lastCollectedPage + 1,
+            inProgress: true,
+            currentPage: totalPages > 0 && nextPage > totalPages ? 1 : nextPage,
             totalPages,
             reportedTotalCount,
+            completedPages: [...completedPages].sort((a, b) => a - b),
+            failedPages: [...failedPages].sort((a, b) => a - b),
             updatedAt: new Date().toISOString()
           }),
           { expirationTtl: COLLECTION_TTL }
@@ -474,9 +545,11 @@ export default {
 
         console.log({
           event: "collector-batch-saved",
-          nextPage: lastCollectedPage + 1,
+          nextPage: totalPages > 0 && nextPage > totalPages ? 1 : nextPage,
           totalPages,
-          accumulatedRows: accumulator.length
+          accumulatedRows: accumulator.length,
+          completedPages: completedPages.size,
+          failedPages: [...failedPages].sort((a, b) => a - b)
         });
 
         return;
@@ -551,9 +624,12 @@ export default {
       await env.TRAFFIC_CACHE.put(
         COLLECTOR_STATE_KEY,
         JSON.stringify({
+          inProgress: false,
           currentPage: 1,
           totalPages,
           reportedTotalCount,
+          completedPages: [],
+          failedPages: [],
           updatedAt: new Date().toISOString(),
           lastCompletedAt: new Date().toISOString()
         }),
