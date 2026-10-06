@@ -215,7 +215,7 @@ function renderSuddenCongestion(sudden) {
     const message = detectedCount > 0
       ? "급격한 속도 저하가 감지되었지만 표시할 구간을 계산하지 못했습니다."
       : (Number(sudden && sudden.minimumSamples || 0) > 0
-        ? "도로별 기준 데이터가 충분히 쌓이지 않았습니다. 몇 개의 전체 수집 사이클이 더 쌓이면 급격한 정체 감지가 활성화됩니다."
+        ? "동일 시간대 기준 데이터가 아직 충분하지 않습니다. 같은 시간대의 전체 수집 이력이 더 쌓이면 급격한 정체 감지가 활성화됩니다."
         : "현재 평소 대비 급격한 속도 저하가 감지되지 않았습니다.");
 
     suddenCongestionContainer.innerHTML =
