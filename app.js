@@ -61,6 +61,20 @@ const briefingCongestionDelta = document.querySelector("#briefingCongestionDelta
 const briefingSuddenCount = document.querySelector("#briefingSuddenCount");
 const briefingMeta = document.querySelector("#briefingMeta");
 
+const commuteMorningStatus = document.querySelector("#commuteMorningStatus");
+const commuteMorningSpeed = document.querySelector("#commuteMorningSpeed");
+const commuteMorningBaseline = document.querySelector("#commuteMorningBaseline");
+const commuteMorningIndex = document.querySelector("#commuteMorningIndex");
+const commuteMorningCongestion = document.querySelector("#commuteMorningCongestion");
+const commuteMorningMessage = document.querySelector("#commuteMorningMessage");
+
+const commuteEveningStatus = document.querySelector("#commuteEveningStatus");
+const commuteEveningSpeed = document.querySelector("#commuteEveningSpeed");
+const commuteEveningBaseline = document.querySelector("#commuteEveningBaseline");
+const commuteEveningIndex = document.querySelector("#commuteEveningIndex");
+const commuteEveningCongestion = document.querySelector("#commuteEveningCongestion");
+const commuteEveningMessage = document.querySelector("#commuteEveningMessage");
+
 function setStatus(text, active = false) {
   if (statusText) statusText.textContent = text;
   if (statusDot) {
@@ -238,6 +252,104 @@ function formatDelta(value, unit, invert = false) {
 
   const sign = effective > 0 ? "+" : "-";
   return sign + formatNumber(Math.abs(number), 1) + unit;
+}
+
+
+function formatCommuteDelta(value, unit) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  if (number === 0) return "변화 없음";
+  return (number > 0 ? "+" : "-") + formatNumber(Math.abs(number), 1) + unit;
+}
+
+function renderCommutePeriod(period, prefix) {
+  const statusEl = document.querySelector("#commute" + prefix + "Status");
+  const speedEl = document.querySelector("#commute" + prefix + "Speed");
+  const baselineEl = document.querySelector("#commute" + prefix + "Baseline");
+  const indexEl = document.querySelector("#commute" + prefix + "Index");
+  const congestionEl = document.querySelector("#commute" + prefix + "Congestion");
+  const messageEl = document.querySelector("#commute" + prefix + "Message");
+
+  if (!period) return;
+
+  if (statusEl) {
+    statusEl.textContent = period.status || (period.available ? "비교 완료" : "데이터 부족");
+    statusEl.className = "commute-status " + (
+      period.status === "악화"
+        ? "commute-worsening"
+        : period.status === "개선"
+          ? "commute-improving"
+          : ""
+    );
+  }
+
+  const latest = period.latest || {};
+  const baseline = period.baseline || {};
+  const delta = period.delta || {};
+
+  if (speedEl) {
+    speedEl.textContent = Number.isFinite(Number(latest.averageSpeed))
+      ? formatNumber(latest.averageSpeed, 1) + " km/h"
+      : "-";
+  }
+
+  if (baselineEl) {
+    baselineEl.textContent = Number.isFinite(Number(baseline.averageSpeed))
+      ? formatNumber(baseline.averageSpeed, 1) + " km/h" +
+        (delta.averageSpeed !== null && delta.averageSpeed !== undefined
+          ? " (" + formatCommuteDelta(delta.averageSpeed, " km/h") + ")"
+          : "")
+      : "-";
+  }
+
+  if (indexEl) {
+    indexEl.textContent = Number.isFinite(Number(latest.trafficIndex))
+      ? formatNumber(latest.trafficIndex, 1)
+      : "-";
+  }
+
+  if (congestionEl) {
+    congestionEl.textContent = Number.isFinite(Number(latest.congestedRatio))
+      ? formatNumber(latest.congestedRatio, 1) + "%"
+      : "-";
+  }
+
+  if (messageEl) {
+    if (period.available) {
+      messageEl.textContent =
+        (period.label || "해당 시간대") +
+        ": 과거 동일 시간대 " +
+        Number(baseline.sampleCount || 0) +
+        "개 샘플의 중앙값과 비교";
+    } else {
+      const sampleCount = Number(baseline.sampleCount || 0);
+      const required = Number(baseline.requiredSamples || 3);
+      messageEl.textContent =
+        period.message ||
+        ("동일 시간대 과거 데이터 " + sampleCount + "/" + required + "개. 데이터가 쌓이면 비교가 활성화됩니다.");
+    }
+  }
+}
+
+async function loadCommuteComparison() {
+  try {
+    const response = await fetch("/api/traffic-commute", { cache: "no-store" });
+    const payload = await response.json();
+
+    if (!response.ok || !payload || !payload.ok) {
+      throw new Error((payload && payload.error) || "HTTP " + response.status);
+    }
+
+    renderCommutePeriod(payload.periods?.morning, "Morning");
+    renderCommutePeriod(payload.periods?.evening, "Evening");
+  } catch (error) {
+    const message = "출퇴근 비교 데이터를 불러오지 못했습니다: " +
+      (error && error.message ? error.message : error);
+
+    [commuteMorningMessage, commuteEveningMessage].forEach(function(el) {
+      if (el) el.textContent = message;
+    });
+  }
 }
 
 function renderTrafficBriefing(briefing) {
@@ -757,3 +869,4 @@ if (onlyCongestedCheck) {
 // 최초 실행: 부산 전체 로드
 loadTraffic("busan");
 loadTrafficHistory();
+loadCommuteComparison();
