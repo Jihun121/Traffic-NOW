@@ -482,24 +482,6 @@ export default {
 
       accumulator = Array.from(mergedRows.values());
 
-      const mergedRows = new Map();
-
-      for (const row of accumulator) {
-        const key = row.linkId
-          ? `link:${row.linkId}`
-          : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
-        mergedRows.set(key, row);
-      }
-
-      for (const row of batchRows) {
-        const key = row.linkId
-          ? `link:${row.linkId}`
-          : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
-        mergedRows.set(key, row);
-      }
-
-      accumulator = Array.from(mergedRows.values());
-
       const lastCollectedPage = completedPages.size > 0
         ? Math.max(...completedPages)
         : 0;
