@@ -20,6 +20,8 @@ const refreshButton = document.querySelector("#refreshButton");
 const updatedAtLabel = document.querySelector("#updatedAtLabel");
 
 const statAvgSpeed = document.querySelector("#statAvgSpeed");
+const statTrafficIndex = document.querySelector("#statTrafficIndex");
+const statTrafficIndexGrade = document.querySelector("#statTrafficIndexGrade");
 const statTotalLinks = document.querySelector("#statTotalLinks");
 const statCongestionLevel = document.querySelector("#statCongestionLevel");
 const statLevelDetail = document.querySelector("#statLevelDetail");
@@ -93,6 +95,19 @@ function renderStats(stats, updatedAt) {
   if (!stats) return;
 
   statAvgSpeed.textContent = `${formatNumber(stats.averageSpeed, 1)} km/h`;
+
+  if (statTrafficIndex) {
+    statTrafficIndex.textContent =
+      stats.trafficIndex !== undefined ? `${formatNumber(stats.trafficIndex, 1)}` : "-";
+  }
+
+  if (statTrafficIndexGrade) {
+    statTrafficIndexGrade.textContent =
+      stats.trafficIndexGrade
+        ? `0~100 · ${stats.trafficIndexGrade}`
+        : "0~100 · 지수 산출 중";
+  }
+
   statTotalLinks.textContent = `${formatNumber(stats.totalCount)}개 구간`;
   statCongestionLevel.textContent = stats.congestionLevel || "원활";
 
