@@ -80,6 +80,7 @@ export async function onRequestGet(context) {
         detectedCount: 0,
         items: []
       },
+      trafficBriefing: snapshot.trafficBriefing || null,
       data: sortedFiltered.slice(0, 100),
       filteredCount: filteredRows.length,
       totalCount: allRows.length,
