@@ -830,7 +830,85 @@ h1 {
   line-height: 1.5;
 }
 
-/* 6. Panel & Table */
+
+/* 6. 실시간 교통 지도 */
+.map-badge {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.map-panel {
+  padding: 14px;
+}
+
+.traffic-map {
+  width: 100%;
+  height: 560px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #111827;
+}
+
+.leaflet-container {
+  font-family: var(--font-family);
+}
+
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.map-legend,
+.map-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.map-legend {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.map-legend-dot {
+  width: 9px;
+  height: 9px;
+  display: inline-block;
+  border-radius: 50%;
+}
+
+.map-legend-dot.smooth {
+  background: #10b981;
+}
+
+.map-legend-dot.slow {
+  background: #f59e0b;
+}
+
+.map-legend-dot.congested {
+  background: #ef4444;
+}
+
+.map-message {
+  margin-top: 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* 7. Panel & Table */
 .panel {
   background: var(--bg-card);
 }
@@ -1002,6 +1080,10 @@ tbody tr:hover {
 
 /* Responsive */
 @media (max-width: 900px) {
+  .traffic-map {
+    height: 460px;
+  }
+
   .commute-grid {
     grid-template-columns: 1fr;
   }
