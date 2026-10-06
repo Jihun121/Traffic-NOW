@@ -462,6 +462,8 @@ function renderTrafficMap(rows) {
     return;
   }
 
+  // 수천 개의 개별 Leaflet 레이어를 동시에 생성하면 브라우저 렌더링이 크게 느려질 수 있다.
+  // 상태별 MultiPolyline 3개로 합쳐서 Canvas가 한 번에 그리도록 한다.
   state.mapLayer.clearLayers();
 
   const candidates = Array.isArray(rows) ? rows : [];
@@ -471,9 +473,14 @@ function renderTrafficMap(rows) {
       })
     : candidates;
 
-  const plottedPoints = [];
-  let plottedLines = 0;
-  let geometryMatched = 0;
+  const groups = {
+    SMOOTH: [],
+    SLOW: [],
+    CONGESTED: []
+  };
+
+  const boundsPoints = [];
+  const detailRows = [];
 
   filtered.forEach(function(row) {
     const color = getMapStatusColor(row.status);
@@ -481,78 +488,117 @@ function renderTrafficMap(rows) {
     const geometry = state.mapGeometry?.[linkId];
     const latLngs = geometryToLatLngs(geometry);
 
-    const popup =
-      '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong><br>' +
-      escapeHtml(row.startName || "-") + ' → ' + escapeHtml(row.endName || "-") + '<br>' +
-      '<strong>' + formatNumber(row.speed, 1) + ' km/h</strong> · ' +
-      escapeHtml(row.statusText || "정보 없음");
+    if (!latLngs || latLngs.length < 2) return;
 
-    if (latLngs && latLngs.length >= 2) {
-      const line = window.L.polyline(
-        latLngs,
-        {
-          color,
-          weight: row.status === "CONGESTED" ? 5 : row.status === "SLOW" ? 4 : 3,
-          opacity: 0.78,
-          interactive: true
-        }
-      );
+    const group = groups[row.status] || groups.SMOOTH;
+    group.push(latLngs);
 
-      line.bindPopup(popup);
-      line.addTo(state.mapLayer);
+    const first = latLngs[0];
+    const last = latLngs[latLngs.length - 1];
 
-      const first = latLngs[0];
-      const last = latLngs[latLngs.length - 1];
-
-      if (Array.isArray(first) && first.length >= 2) {
-        plottedPoints.push({ latitude: first[0], longitude: first[1] });
-      }
-      if (Array.isArray(last) && last.length >= 2) {
-        plottedPoints.push({ latitude: last[0], longitude: last[1] });
-      }
-
-      geometryMatched++;
-      plottedLines++;
-      return;
+    if (Array.isArray(first) && first.length >= 2) {
+      boundsPoints.push(first);
+    }
+    if (Array.isArray(last) && last.length >= 2) {
+      boundsPoints.push(last);
     }
 
-    const point = getMapPoint(row);
-    if (!point) return;
-
-    const marker = window.L.circleMarker(
-      [point.latitude, point.longitude],
-      {
-        radius: row.status === "CONGESTED" ? 8 : 6,
-        color,
-        weight: 1.5,
-        fillColor: color,
-        fillOpacity: 0.75
-      }
-    );
-
-    marker.bindPopup(popup);
-    marker.addTo(state.mapLayer);
-    plottedPoints.push(point);
+    // 전체 지도는 합쳐서 그리고, 클릭 팝업은 느린 도로 중 일부만 개별 레이어로 추가한다.
+    if (
+      (row.status === "CONGESTED" || row.status === "SLOW") &&
+      detailRows.length < 250
+    ) {
+      detailRows.push({
+        row: row,
+        color: color,
+        latLngs: latLngs
+      });
+    }
   });
 
-  if (plottedPoints.length > 0) {
+  const renderer = window.L.canvas({
+    padding: 0.2
+  });
+
+  const groupStyles = {
+    SMOOTH: { color: "#10b981", weight: 3, opacity: 0.55 },
+    SLOW: { color: "#f59e0b", weight: 4, opacity: 0.78 },
+    CONGESTED: { color: "#ef4444", weight: 5, opacity: 0.88 }
+  };
+
+  let plottedLines = 0;
+
+  Object.keys(groups).forEach(function(status) {
+    const lines = groups[status];
+    if (!lines.length) return;
+
+    const layer = window.L.polyline(lines, {
+      renderer: renderer,
+      color: groupStyles[status].color,
+      weight: groupStyles[status].weight,
+      opacity: groupStyles[status].opacity,
+      interactive: false
+    });
+
+    layer.addTo(state.mapLayer);
+    plottedLines += lines.length;
+  });
+
+  // 정체·서행 구간 중 일부만 클릭 가능한 상세 선으로 올려 성능과 정보성을 동시에 확보한다.
+  detailRows.forEach(function(item) {
+    const row = item.row;
+    const line = window.L.polyline(item.latLngs, {
+      renderer: renderer,
+      color: item.color,
+      weight: row.status === "CONGESTED" ? 7 : 6,
+      opacity: 0.95,
+      interactive: true
+    });
+
+    const popup =
+      "<strong>" + escapeHtml(row.roadName || "도로명 없음") + "</strong><br>" +
+      escapeHtml(row.startName || "-") + " → " + escapeHtml(row.endName || "-") + "<br>" +
+      "<strong>" + formatNumber(row.speed, 1) + " km/h</strong> · " +
+      escapeHtml(row.statusText || "정보 없음") + "<br>" +
+      "<span style=\"font-size:11px;color:#64748b\">LINK_ID " +
+      escapeHtml(row.linkId || "-") + "</span>";
+
+    line.bindPopup(popup);
+    line.addTo(state.mapLayer);
+  });
+
+  if (boundsPoints.length > 0) {
     const bounds = window.L.latLngBounds(
-      plottedPoints.map(function(point) {
-        return [point.latitude, point.longitude];
+      boundsPoints.map(function(point) {
+        return [point[0], point[1]];
       })
     );
 
-    state.map.fitBounds(bounds.pad(0.06), {
-      maxZoom: 13
+    state.map.fitBounds(bounds.pad(0.04), {
+      maxZoom: 13,
+      animate: false
     });
   } else {
-    state.map.setView([35.1796, 129.0756], 11);
+    state.map.setView([35.1796, 129.0756], 11, {
+      animate: false
+    });
   }
+
+  setTimeout(function() {
+    if (state.map) state.map.invalidateSize({ pan: false });
+  }, 100);
 
   if (mapMessage) {
     const overallMatched = Number(state.mapGeometryMeta?.matchedLinkCount || 0);
-    const overallTotal = Number(state.mapGeometryMeta?.trafficLinkCount || state.mapTotalRows || candidates.length);
-    const overallUnmatched = Number(state.mapGeometryMeta?.unmatchedLinkCount || Math.max(0, overallTotal - overallMatched));
+    const overallTotal = Number(
+      state.mapGeometryMeta?.trafficLinkCount ||
+      state.mapTotalRows ||
+      candidates.length
+    );
+    const overallUnmatched = Number(
+      state.mapGeometryMeta?.unmatchedLinkCount ||
+      Math.max(0, overallTotal - overallMatched)
+    );
 
     if (plottedLines === 0) {
       mapMessage.textContent =
@@ -560,17 +606,17 @@ function renderTrafficMap(rows) {
     } else {
       const filterLabel = state.mapFilter === "congested" ? "정체·서행" : "전체";
       mapMessage.textContent =
-        filterLabel + " 도로 선형 " +
+        filterLabel + " 실제 도로 선형 " +
         plottedLines.toLocaleString("ko-KR") +
-        "개 표시 · 전체 링크 " +
+        "개 표시 · 전체 " +
         Number(state.mapTotalRows || candidates.length).toLocaleString("ko-KR") +
-        "개 · geometry 매칭 " +
+        "개 링크 · geometry 매칭 " +
         overallMatched.toLocaleString("ko-KR") +
         "/" +
         overallTotal.toLocaleString("ko-KR") +
         " (미매칭 " +
         overallUnmatched.toLocaleString("ko-KR") +
-        "개)";
+        "개) · 렌더링 최적화 적용";
     }
   }
 }
