@@ -388,6 +388,7 @@ async function loadTrafficMap(regionKey) {
 
     state.mapRows = Array.isArray(payload.data) ? payload.data : [];
     state.mapTotalRows = Number(payload.totalRows || state.mapRows.length);
+    if (state.map) state.map.centerManuallySet = false;
 
     const rendered = renderTrafficMap(state.mapRows);
 
@@ -402,20 +403,10 @@ async function loadTrafficMap(regionKey) {
     }).length;
 
     if (mapMessage && state.mapRows.length > 0) {
-      const metaMatched = Number(state.mapGeometryMeta?.matchedLinkCount || 0);
-      const metaTotal = Number(state.mapGeometryMeta?.trafficLinkCount || state.mapTotalRows);
-      const metaUnmatched = Number(state.mapGeometryMeta?.unmatchedLinkCount || 0);
-
       mapMessage.textContent =
-        "실제 도로 선형 " +
-        matchedInSnapshot.toLocaleString("ko-KR") +
-        "개 표시 · 전체 " +
-        state.mapTotalRows.toLocaleString("ko-KR") +
-        "개 링크 · geometry 매칭 " +
-        metaMatched.toLocaleString("ko-KR") +
-        "/" +
-        metaTotal.toLocaleString("ko-KR") +
-        (metaUnmatched > 0 ? " · " + metaUnmatched.toLocaleString("ko-KR") + "개 미매칭" : "");
+        "실제 도로 선형 " + matchedInSnapshot.toLocaleString("ko-KR") +
+        "개 표시 · 전체 " + state.mapTotalRows.toLocaleString("ko-KR") +
+        "개 링크 · 자체 지도 렌더러";
     }
   } catch (error) {
     if (mapMessage) {
@@ -433,64 +424,186 @@ function getMapStatusColor(status) {
   return "#94a3b8";
 }
 
+
+function mapProject(lng, lat, zoom) {
+  const scale = 256 * Math.pow(2, zoom);
+  const sinLat = Math.max(-0.9999, Math.min(0.9999, Math.sin(lat * Math.PI / 180)));
+  return {
+    x: (lng + 180) / 360 * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale
+  };
+}
+
+function mapUnproject(x, y, zoom) {
+  const scale = 256 * Math.pow(2, zoom);
+  const lng = x / scale * 360 - 180;
+  const n = Math.PI - 2 * Math.PI * y / scale;
+  const lat = 180 / Math.PI * Math.atan(Math.sinh(n));
+  return { lng, lat };
+}
+
 function ensureTrafficMap() {
   if (!trafficMap) return false;
 
-  if (!window.L) {
-    if (mapMessage) {
-      mapMessage.textContent =
-        "Leaflet 지도 라이브러리를 불러오지 못했습니다. 브라우저의 네트워크/확장 프로그램 또는 CDN 차단 여부를 확인해야 합니다.";
-    }
-    console.error("[Traffic Map] Leaflet(window.L) is not available.");
-    return false;
-  }
-
   if (!state.map) {
-    state.map = window.L.map(trafficMap, {
-      zoomControl: true,
-      preferCanvas: true
-    }).setView([35.1796, 129.0756], 11);
+    trafficMap.innerHTML = '<div class="traffic-map-canvas">' +
+      '<div class="traffic-map-tiles" aria-hidden="true"></div>' +
+      '<svg class="traffic-map-svg" aria-label="부산 실시간 교통 도로 지도"></svg>' +
+      '<div class="traffic-map-popup" hidden></div>' +
+      '<div class="traffic-map-controls">' +
+        '<button type="button" data-map-zoom="in" aria-label="확대">+</button>' +
+        '<button type="button" data-map-zoom="out" aria-label="축소">−</button>' +
+      '</div>' +
+      '<div class="traffic-map-attribution">© OpenStreetMap contributors</div>' +
+    '</div>';
 
-    const tileLayer = window.L.tileLayer(
-      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors"
-      }
-    );
+    const canvas = trafficMap.querySelector(".traffic-map-canvas");
+    const tiles = trafficMap.querySelector(".traffic-map-tiles");
+    const svg = trafficMap.querySelector(".traffic-map-svg");
+    const popup = trafficMap.querySelector(".traffic-map-popup");
 
-    tileLayer.on("tileerror", function(event) {
-      console.warn("[Traffic Map] Base map tile failed to load:", event && event.tile);
-      if (mapMessage) {
-        mapMessage.textContent =
-          "도로 데이터는 준비됐지만 배경지도 타일을 불러오지 못했습니다. 네트워크 또는 지도 타일 서버 접근을 확인하세요.";
-      }
+    state.map = {
+      canvas,
+      tiles,
+      svg,
+      popup,
+      zoom: 10.8,
+      center: { lng: 129.0756, lat: 35.1796 },
+      dragging: false,
+      dragX: 0,
+      dragY: 0,
+      centerManuallySet: false
+    };
+    state.mapLayer = null;
+
+    const zoomTo = function(delta, clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const width = rect.width;
+      const height = rect.height;
+      const oldZoom = state.map.zoom;
+      const targetZoom = Math.max(8.5, Math.min(14.5, oldZoom + delta));
+      if (targetZoom === oldZoom) return;
+
+      const cursorX = Number.isFinite(clientX) ? clientX - rect.left : width / 2;
+      const cursorY = Number.isFinite(clientY) ? clientY - rect.top : height / 2;
+
+      const oldCenter = mapProject(state.map.center.lng, state.map.center.lat, oldZoom);
+      const before = mapUnproject(
+        oldCenter.x + cursorX - width / 2,
+        oldCenter.y + cursorY - height / 2,
+        oldZoom
+      );
+
+      const newPoint = mapProject(before.lng, before.lat, targetZoom);
+      const newCenterX = newPoint.x - cursorX + width / 2;
+      const newCenterY = newPoint.y - cursorY + height / 2;
+      state.map.center = mapUnproject(newCenterX, newCenterY, targetZoom);
+      state.map.zoom = targetZoom;
+      state.map.centerManuallySet = true;
+      renderTrafficMap(rowsForMapRender);
+    };
+
+    canvas.addEventListener("wheel", function(event) {
+      event.preventDefault();
+      zoomTo(event.deltaY < 0 ? 0.5 : -0.5, event.clientX, event.clientY);
+    }, { passive: false });
+
+    canvas.addEventListener("pointerdown", function(event) {
+      if (event.target.closest(".traffic-map-controls") || event.target.closest(".traffic-map-popup")) return;
+      state.map.dragging = true;
+      state.map.dragX = event.clientX;
+      state.map.dragY = event.clientY;
+      state.map.centerManuallySet = true;
+      canvas.setPointerCapture(event.pointerId);
+      canvas.classList.add("is-dragging");
     });
 
-    tileLayer.addTo(state.map);
+    canvas.addEventListener("pointermove", function(event) {
+      if (!state.map.dragging) return;
+      const dx = event.clientX - state.map.dragX;
+      const dy = event.clientY - state.map.dragY;
+      state.map.dragX = event.clientX;
+      state.map.dragY = event.clientY;
 
-    state.mapLayer = window.L.layerGroup().addTo(state.map);
+      const centerWorld = mapProject(state.map.center.lng, state.map.center.lat, state.map.zoom);
+      state.map.center = mapUnproject(
+        centerWorld.x - dx,
+        centerWorld.y - dy,
+        state.map.zoom
+      );
+      renderTrafficMap(rowsForMapRender);
+    });
 
-    setTimeout(function() {
-      state.map.invalidateSize();
-    }, 0);
+    canvas.addEventListener("pointerup", function(event) {
+      state.map.dragging = false;
+      try { canvas.releasePointerCapture(event.pointerId); } catch {}
+      canvas.classList.remove("is-dragging");
+    });
+
+    canvas.addEventListener("pointercancel", function() {
+      state.map.dragging = false;
+      canvas.classList.remove("is-dragging");
+    });
+
+    canvas.addEventListener("click", function(event) {
+      const zoomButton = event.target.closest("[data-map-zoom]");
+      if (!zoomButton) return;
+      zoomTo(zoomButton.dataset.mapZoom === "in" ? 0.75 : -0.75);
+    });
+
+    window.addEventListener("resize", function() {
+      if (state.map) renderTrafficMap(rowsForMapRender);
+    });
   }
 
   return true;
 }
 
-function renderTrafficMap(rows) {
-  if (!trafficMap) return false;
+let rowsForMapRender = [];
 
-  if (!ensureTrafficMap()) {
-    return false;
+function renderMapTiles() {
+  if (!state.map) return;
+
+  const canvas = state.map.canvas;
+  const tiles = state.map.tiles;
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (!width || !height) return;
+
+  const tileZoom = Math.floor(state.map.zoom);
+  const scale = Math.pow(2, state.map.zoom - tileZoom);
+  const tileSize = 256;
+  const centerTileWorld = mapProject(state.map.center.lng, state.map.center.lat, tileZoom);
+  const centerFracX = centerTileWorld.x * scale;
+  const centerFracY = centerTileWorld.y * scale;
+  const startX = Math.floor((centerFracX - width / 2) / (tileSize * scale)) - 1;
+  const endX = Math.floor((centerFracX + width / 2) / (tileSize * scale)) + 1;
+  const startY = Math.floor((centerFracY - height / 2) / (tileSize * scale)) - 1;
+  const endY = Math.floor((centerFracY + height / 2) / (tileSize * scale)) + 1;
+  const maxTile = Math.pow(2, tileZoom);
+
+  let html = "";
+  for (let ty = startY; ty <= endY; ty++) {
+    if (ty < 0 || ty >= maxTile) continue;
+    for (let tx = startX; tx <= endX; tx++) {
+      const wrappedX = ((tx % maxTile) + maxTile) % maxTile;
+      const left = tx * tileSize * scale - centerFracX + width / 2;
+      const top = ty * tileSize * scale - centerFracY + height / 2;
+      html += '<img class="traffic-map-tile" alt="" draggable="false" ' +
+        'src="https://tile.openstreetmap.org/' + tileZoom + '/' + wrappedX + '/' + ty + '.png" ' +
+        'style="width:' + (tileSize * scale) + 'px;height:' + (tileSize * scale) +
+        'px;left:' + left + 'px;top:' + top + 'px">';
+    }
   }
+  tiles.innerHTML = html;
+}
 
-  // 수천 개의 개별 Leaflet 레이어를 동시에 생성하면 브라우저 렌더링이 크게 느려질 수 있다.
-  // 상태별 MultiPolyline 3개로 합쳐서 Canvas가 한 번에 그리도록 한다.
-  state.mapLayer.clearLayers();
+function renderTrafficMap(rows) {
+  rowsForMapRender = Array.isArray(rows) ? rows : [];
+  if (!trafficMap) return false;
+  if (!ensureTrafficMap()) return false;
 
-  const candidates = Array.isArray(rows) ? rows : [];
+  const candidates = rowsForMapRender;
   const filtered = state.mapFilter === "congested"
     ? candidates.filter(function(row) {
         return row.status === "CONGESTED" || row.status === "SLOW";
@@ -502,117 +615,133 @@ function renderTrafficMap(rows) {
     SLOW: [],
     CONGESTED: []
   };
-
-  const boundsPoints = [];
   const detailRows = [];
+  const bounds = [];
+
+  const width = state.map.canvas.clientWidth;
+  const height = state.map.canvas.clientHeight;
+  if (!width || !height) return false;
+
+  const center = mapProject(state.map.center.lng, state.map.center.lat, state.map.zoom);
 
   filtered.forEach(function(row) {
-    const color = getMapStatusColor(row.status);
     const linkId = String(row.linkId || "");
     const geometry = state.mapGeometry?.[linkId];
     const latLngs = geometryToLatLngs(geometry);
-
     if (!latLngs || latLngs.length < 2) return;
 
-    const group = groups[row.status] || groups.SMOOTH;
-    group.push(latLngs);
+    const screenPoints = latLngs.map(function(point) {
+      const p = mapProject(point[1], point[0], state.map.zoom);
+      return [
+        p.x - center.x + width / 2,
+        p.y - center.y + height / 2
+      ];
+    });
 
-    const first = latLngs[0];
-    const last = latLngs[latLngs.length - 1];
+    const status = row.status === "SLOW" || row.status === "CONGESTED" ? row.status : "SMOOTH";
+    groups[status].push(screenPoints);
 
-    if (Array.isArray(first) && first.length >= 2) {
-      boundsPoints.push(first);
-    }
-    if (Array.isArray(last) && last.length >= 2) {
-      boundsPoints.push(last);
+    if (detailRows.length < 250 && (row.status === "CONGESTED" || row.status === "SLOW")) {
+      detailRows.push({ row, screenPoints });
     }
 
-    // 전체 지도는 합쳐서 그리고, 클릭 팝업은 느린 도로 중 일부만 개별 레이어로 추가한다.
-    if (
-      (row.status === "CONGESTED" || row.status === "SLOW") &&
-      detailRows.length < 250
-    ) {
-      detailRows.push({
-        row: row,
-        color: color,
-        latLngs: latLngs
-      });
-    }
+    screenPoints.forEach(function(point) {
+      if (point[0] >= -200 && point[0] <= width + 200 &&
+          point[1] >= -200 && point[1] <= height + 200) {
+        bounds.push(point);
+      }
+    });
   });
 
-  const renderer = window.L.canvas({
-    padding: 0.2
-  });
-
-  const groupStyles = {
-    SMOOTH: { color: "#10b981", weight: 3, opacity: 0.55 },
-    SLOW: { color: "#f59e0b", weight: 4, opacity: 0.78 },
-    CONGESTED: { color: "#ef4444", weight: 5, opacity: 0.88 }
+  const makePath = function(lines) {
+    return lines.map(function(line) {
+      if (!line.length) return "";
+      return "M" + line.map(function(point, index) {
+        return (index ? "L" : "") + point[0].toFixed(1) + "," + point[1].toFixed(1);
+      }).join("");
+    }).join(" ");
   };
 
-  let plottedLines = 0;
+  state.map.svg.setAttribute("viewBox", "0 0 " + width + " " + height);
 
-  Object.keys(groups).forEach(function(status) {
-    const lines = groups[status];
-    if (!lines.length) return;
+  const styles = {
+    SMOOTH: { color: "#10b981", width: 2.5, opacity: 0.72 },
+    SLOW: { color: "#f59e0b", width: 3.5, opacity: 0.9 },
+    CONGESTED: { color: "#ef4444", width: 4.5, opacity: 0.95 }
+  };
 
-    const layer = window.L.polyline(lines, {
-      renderer: renderer,
-      color: groupStyles[status].color,
-      weight: groupStyles[status].weight,
-      opacity: groupStyles[status].opacity,
-      interactive: false
-    });
-
-    layer.addTo(state.mapLayer);
-    plottedLines += lines.length;
+  let svg = "";
+  ["SMOOTH", "SLOW", "CONGESTED"].forEach(function(status) {
+    if (!groups[status].length) return;
+    const s = styles[status];
+    svg += '<path d="' + makePath(groups[status]) + '" fill="none" stroke="' +
+      s.color + '" stroke-width="' + s.width + '" stroke-opacity="' + s.opacity +
+      '" stroke-linecap="round" stroke-linejoin="round"></path>';
   });
 
-  // 정체·서행 구간 중 일부만 클릭 가능한 상세 선으로 올려 성능과 정보성을 동시에 확보한다.
-  detailRows.forEach(function(item) {
-    const row = item.row;
-    const line = window.L.polyline(item.latLngs, {
-      renderer: renderer,
-      color: item.color,
-      weight: row.status === "CONGESTED" ? 7 : 6,
-      opacity: 0.95,
-      interactive: true
-    });
-
-    const popup =
-      "<strong>" + escapeHtml(row.roadName || "도로명 없음") + "</strong><br>" +
-      escapeHtml(row.startName || "-") + " → " + escapeHtml(row.endName || "-") + "<br>" +
-      "<strong>" + formatNumber(row.speed, 1) + " km/h</strong> · " +
-      escapeHtml(row.statusText || "정보 없음") + "<br>" +
-      "<span style=\"font-size:11px;color:#64748b\">LINK_ID " +
-      escapeHtml(row.linkId || "-") + "</span>";
-
-    line.bindPopup(popup);
-    line.addTo(state.mapLayer);
+  detailRows.forEach(function(item, index) {
+    svg += '<path class="traffic-map-hit" data-map-row="' + index + '" d="' +
+      makePath([item.screenPoints]) +
+      '" fill="none" stroke="transparent" stroke-width="14" stroke-linecap="round"></path>';
   });
 
-  if (boundsPoints.length > 0) {
-    const bounds = window.L.latLngBounds(
-      boundsPoints.map(function(point) {
-        return [point[0], point[1]];
-      })
+  state.map.svg.innerHTML = svg;
+
+  state.map.svg.querySelectorAll("[data-map-row]").forEach(function(node) {
+    node.addEventListener("click", function(event) {
+      event.stopPropagation();
+      const item = detailRows[Number(node.dataset.mapRow)];
+      if (!item) return;
+
+      const row = item.row;
+      const point = item.screenPoints[Math.floor(item.screenPoints.length / 2)] ||
+        [width / 2, height / 2];
+
+      state.map.popup.innerHTML =
+        "<strong>" + escapeHtml(row.roadName || "도로명 없음") + "</strong><br>" +
+        escapeHtml(row.startName || "-") + " → " + escapeHtml(row.endName || "-") + "<br>" +
+        "<strong>" + formatNumber(row.speed, 1) + " km/h</strong> · " +
+        escapeHtml(row.statusText || "정보 없음") + "<br>" +
+        '<span style="font-size:11px;color:#64748b">LINK_ID ' +
+        escapeHtml(row.linkId || "-") + "</span>";
+      state.map.popup.style.left = Math.min(Math.max(point[0] + 8, 8), width - 238) + "px";
+      state.map.popup.style.top = Math.min(Math.max(point[1] + 8, 8), height - 120) + "px";
+      state.map.popup.hidden = false;
+    });
+  });
+
+  renderMapTiles();
+
+  if (!state.map.centerManuallySet && bounds.length) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    bounds.forEach(function(point) {
+      minX = Math.min(minX, point[0]);
+      maxX = Math.max(maxX, point[0]);
+      minY = Math.min(minY, point[1]);
+      maxY = Math.max(maxY, point[1]);
+    });
+
+    const centerScreenX = (minX + maxX) / 2;
+    const centerScreenY = (minY + maxY) / 2;
+    const currentCenter = mapProject(state.map.center.lng, state.map.center.lat, state.map.zoom);
+    state.map.center = mapUnproject(
+      currentCenter.x + centerScreenX - width / 2,
+      currentCenter.y + centerScreenY - height / 2,
+      state.map.zoom
     );
-
-    state.map.fitBounds(bounds.pad(0.04), {
-      maxZoom: 13,
-      animate: false
-    });
-  } else {
-    state.map.setView([35.1796, 129.0756], 11, {
-      animate: false
-    });
+    state.map.centerManuallySet = true;
+    renderTrafficMap(rowsForMapRender);
+    return true;
   }
 
-  setTimeout(function() {
-    if (state.map) state.map.invalidateSize({ pan: false });
-  }, 100);
+  if (state.map.popup && !filtered.length) {
+    state.map.popup.hidden = true;
+  }
 
   if (mapMessage) {
+    const matched = filtered.filter(function(row) {
+      return Boolean(state.mapGeometry?.[String(row.linkId || "")]);
+    }).length;
     const overallMatched = Number(state.mapGeometryMeta?.matchedLinkCount || 0);
     const overallTotal = Number(
       state.mapGeometryMeta?.trafficLinkCount ||
@@ -624,27 +753,17 @@ function renderTrafficMap(rows) {
       Math.max(0, overallTotal - overallMatched)
     );
 
-    if (plottedLines === 0) {
-      mapMessage.textContent =
-        "표준노드링크 geometry와 매칭된 도로가 없어 현재 지도를 표시할 수 없습니다.";
-    } else {
-      const filterLabel = state.mapFilter === "congested" ? "정체·서행" : "전체";
-      mapMessage.textContent =
-        filterLabel + " 실제 도로 선형 " +
-        plottedLines.toLocaleString("ko-KR") +
-        "개 표시 · 전체 " +
-        Number(state.mapTotalRows || candidates.length).toLocaleString("ko-KR") +
-        "개 링크 · geometry 매칭 " +
-        overallMatched.toLocaleString("ko-KR") +
-        "/" +
-        overallTotal.toLocaleString("ko-KR") +
-        " (미매칭 " +
-        overallUnmatched.toLocaleString("ko-KR") +
-        "개) · 렌더링 최적화 적용";
-    }
+    mapMessage.textContent = filtered.length
+      ? (state.mapFilter === "congested" ? "정체·서행 " : "전체 ") +
+        "실제 도로 선형 " + matched.toLocaleString("ko-KR") +
+        "개 표시 · 전체 " + Number(state.mapTotalRows || candidates.length).toLocaleString("ko-KR") +
+        "개 링크 · geometry 매칭 " + overallMatched.toLocaleString("ko-KR") + "/" +
+        overallTotal.toLocaleString("ko-KR") + " · 미매칭 " + overallUnmatched.toLocaleString("ko-KR") +
+        "개 · 자체 지도 렌더러"
+      : "현재 표시할 교통 도로가 없습니다.";
   }
 
-  return plottedLines > 0;
+  return filtered.length > 0;
 }
 
 function formatCommuteDelta(value, unit) {
