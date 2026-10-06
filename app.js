@@ -13,7 +13,8 @@ const state = {
   suddenCongestion: null,
   mapFilter: "all",
   map: null,
-  mapLayer: null
+  mapLayer: null,
+  mapRows: []
 };
 
 // DOM 요소 캐싱
@@ -312,7 +313,8 @@ async function loadTrafficMap(regionKey) {
       throw new Error((payload && payload.error) || "HTTP " + response.status);
     }
 
-    renderTrafficMap(Array.isArray(payload.data) ? payload.data : []);
+    state.mapRows = Array.isArray(payload.data) ? payload.data : [];
+    renderTrafficMap(state.mapRows);
 
     if (mapMessage && payload.coordinateRows !== undefined) {
       mapMessage.textContent =
@@ -1016,7 +1018,6 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     renderTop10(state.top10);
     renderSuddenCongestion(state.suddenCongestion);
     renderTrafficBriefing(payload.trafficBriefing || null);
-    renderTrafficMap(state.rawData);
     loadTrafficMap(state.regionKey);
     renderTable();
 
@@ -1049,7 +1050,7 @@ if (mapAllButton) {
     state.mapFilter = "all";
     mapAllButton.classList.add("active");
     if (mapCongestedButton) mapCongestedButton.classList.remove("active");
-    renderTrafficMap(state.rawData);
+    renderTrafficMap(state.mapRows);
   });
 }
 
