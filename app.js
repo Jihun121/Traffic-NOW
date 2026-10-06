@@ -10,7 +10,10 @@ const state = {
   history: [],
   historyLoading: false,
   selectedHistoryAt: "",
-  suddenCongestion: null
+  suddenCongestion: null,
+  mapFilter: "all",
+  map: null,
+  mapLayer: null
 };
 
 // DOM 요소 캐싱
@@ -74,6 +77,11 @@ const commuteEveningBaseline = document.querySelector("#commuteEveningBaseline")
 const commuteEveningIndex = document.querySelector("#commuteEveningIndex");
 const commuteEveningCongestion = document.querySelector("#commuteEveningCongestion");
 const commuteEveningMessage = document.querySelector("#commuteEveningMessage");
+
+const trafficMap = document.querySelector("#trafficMap");
+const mapMessage = document.querySelector("#mapMessage");
+const mapAllButton = document.querySelector("#mapAllButton");
+const mapCongestedButton = document.querySelector("#mapCongestedButton");
 
 function setStatus(text, active = false) {
   if (statusText) statusText.textContent = text;
@@ -254,6 +262,149 @@ function formatDelta(value, unit, invert = false) {
   return sign + formatNumber(Math.abs(number), 1) + unit;
 }
 
+
+
+function getMapPoint(row) {
+  const latitude = Number(row.latitude);
+  const longitude = Number(row.longitude);
+
+  if (
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= 33 &&
+    latitude <= 39.5 &&
+    longitude >= 124 &&
+    longitude <= 132.5
+  ) {
+    return { latitude, longitude };
+  }
+
+  const startLatitude = Number(row.startLatitude);
+  const startLongitude = Number(row.startLongitude);
+  const endLatitude = Number(row.endLatitude);
+  const endLongitude = Number(row.endLongitude);
+
+  if (
+    Number.isFinite(startLatitude) &&
+    Number.isFinite(startLongitude) &&
+    Number.isFinite(endLatitude) &&
+    Number.isFinite(endLongitude)
+  ) {
+    return {
+      latitude: (startLatitude + endLatitude) / 2,
+      longitude: (startLongitude + endLongitude) / 2
+    };
+  }
+
+  return null;
+}
+
+function getMapStatusColor(status) {
+  if (status === "CONGESTED") return "#ef4444";
+  if (status === "SLOW") return "#f59e0b";
+  if (status === "SMOOTH") return "#10b981";
+  return "#94a3b8";
+}
+
+function ensureTrafficMap() {
+  if (!trafficMap || !window.L) return false;
+
+  if (!state.map) {
+    state.map = window.L.map(trafficMap, {
+      zoomControl: true,
+      preferCanvas: true
+    }).setView([35.1796, 129.0756], 11);
+
+    window.L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      }
+    ).addTo(state.map);
+
+    state.mapLayer = window.L.layerGroup().addTo(state.map);
+
+    setTimeout(function() {
+      state.map.invalidateSize();
+    }, 0);
+  }
+
+  return true;
+}
+
+function renderTrafficMap(rows) {
+  if (!trafficMap) return;
+
+  if (!ensureTrafficMap()) {
+    if (mapMessage) mapMessage.textContent = "지도 라이브러리를 불러오지 못했습니다.";
+    return;
+  }
+
+  state.mapLayer.clearLayers();
+
+  const candidates = Array.isArray(rows) ? rows : [];
+  const filtered = state.mapFilter === "congested"
+    ? candidates.filter(function(row) {
+        return row.status === "CONGESTED" || row.status === "SLOW";
+      })
+    : candidates;
+
+  const plotted = filtered.map(function(row) {
+    const point = getMapPoint(row);
+    if (!point) return null;
+
+    const color = getMapStatusColor(row.status);
+    const marker = window.L.circleMarker(
+      [point.latitude, point.longitude],
+      {
+        radius: row.status === "CONGESTED" ? 8 : 6,
+        color,
+        weight: 1.5,
+        fillColor: color,
+        fillOpacity: 0.75
+      }
+    );
+
+    marker.bindPopup(
+      '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong><br>' +
+      escapeHtml(row.startName || "-") + ' → ' + escapeHtml(row.endName || "-") + '<br>' +
+      '<strong>' + formatNumber(row.speed, 1) + ' km/h</strong> · ' +
+      escapeHtml(row.statusText || "정보 없음")
+    );
+
+    marker.addTo(state.mapLayer);
+    return point;
+  }).filter(Boolean);
+
+  if (plotted.length > 0) {
+    const bounds = window.L.latLngBounds(
+      plotted.map(function(point) {
+        return [point.latitude, point.longitude];
+      })
+    );
+    state.map.fitBounds(bounds.pad(0.08), {
+      maxZoom: 13
+    });
+  } else {
+    state.map.setView([35.1796, 129.0756], 11);
+  }
+
+  if (mapMessage) {
+    const coordinateCount = candidates.filter(function(row) {
+      return Boolean(getMapPoint(row));
+    }).length;
+
+    if (coordinateCount === 0) {
+      mapMessage.textContent =
+        "현재 부산 API snapshot에 지도 좌표가 포함된 교통 링크가 없습니다. 좌표가 제공되면 자동으로 지도에 표시됩니다.";
+    } else {
+      mapMessage.textContent =
+        plotted.length.toLocaleString("ko-KR") + "개 교통 링크 표시 · " +
+        coordinateCount.toLocaleString("ko-KR") + "개 좌표 확보";
+    }
+  }
+}
 
 function formatCommuteDelta(value, unit) {
   const number = Number(value);
@@ -798,6 +949,7 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     renderTop10(state.top10);
     renderSuddenCongestion(state.suddenCongestion);
     renderTrafficBriefing(payload.trafficBriefing || null);
+    renderTrafficMap(state.rawData);
     renderTable();
 
     const cacheLabel = payload.cache === "SNAPSHOT" ? "백그라운드 스냅샷" : "스냅샷";
@@ -823,6 +975,30 @@ function displayError(diag) {
   }
 }
 
+
+if (mapAllButton) {
+  mapAllButton.addEventListener("click", function() {
+    state.mapFilter = "all";
+    mapAllButton.classList.add("active");
+    if (mapCongestedButton) mapCongestedButton.classList.remove("active");
+    renderTrafficMap(state.rawData);
+  });
+}
+
+if (mapCongestedButton) {
+  mapCongestedButton.addEventListener("click", function() {
+    state.mapFilter = "congested";
+    mapCongestedButton.classList.add("active");
+    if (mapAllButton) mapAllButton.classList.remove("active");
+    renderTrafficMap(state.rawData);
+  });
+}
+
+window.addEventListener("resize", function() {
+  if (state.map) {
+    state.map.invalidateSize();
+  }
+});
 
 if (historySelect) {
   historySelect.addEventListener("change", function() {
