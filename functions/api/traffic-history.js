@@ -64,7 +64,8 @@ function summarizeHistoryEntry(entry) {
     congestedRatio: Number(entry?.stats?.statusRatios?.congested || 0),
     slowRatio: Number(entry?.stats?.statusRatios?.slow || 0),
     smoothRatio: Number(entry?.stats?.statusRatios?.smooth || 0),
-    congestionLevel: entry?.stats?.congestionLevel || "데이터 없음"
+    congestionLevel: entry?.stats?.congestionLevel || "데이터 없음",
+    suddenCongestionCount: Number(entry?.suddenCongestion?.detectedCount || 0)
   };
 }
 
@@ -186,6 +187,7 @@ export async function onRequestGet(context) {
       source: snapshot.source || "부산광역시 링크소통정보",
       fetchedAt: snapshot.fetchedAt || null,
       stats: snapshot.stats || null,
+      suddenCongestion: snapshot.suddenCongestion || null,
       totalCount: Number(snapshot.totalCount || snapshot.rows.length),
       returnedRows: rows.length,
       data: rows,
