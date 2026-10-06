@@ -76,6 +76,10 @@ export async function onRequestGet(context) {
       },
       stats,
       top10,
+      suddenCongestion: snapshot.suddenCongestion || {
+        detectedCount: 0,
+        items: []
+      },
       data: sortedFiltered.slice(0, 100),
       filteredCount: filteredRows.length,
       totalCount: allRows.length,
