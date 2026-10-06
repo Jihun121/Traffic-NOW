@@ -299,6 +299,37 @@ function getMapPoint(row) {
   return null;
 }
 
+
+async function loadTrafficMap(regionKey) {
+  try {
+    const response = await fetch(
+      "/api/traffic-map?region=" + encodeURIComponent(regionKey || state.regionKey || "busan"),
+      { cache: "no-store" }
+    );
+    const payload = await response.json();
+
+    if (!response.ok || !payload || !payload.ok) {
+      throw new Error((payload && payload.error) || "HTTP " + response.status);
+    }
+
+    renderTrafficMap(Array.isArray(payload.data) ? payload.data : []);
+
+    if (mapMessage && payload.coordinateRows !== undefined) {
+      mapMessage.textContent =
+        Number(payload.coordinateRows).toLocaleString("ko-KR") +
+        "개 좌표 링크 · 현재 권역 전체 " +
+        Number(payload.totalRows || 0).toLocaleString("ko-KR") +
+        "개 링크 중 지도 표시 대상";
+    }
+  } catch (error) {
+    if (mapMessage) {
+      mapMessage.textContent =
+        "지도 데이터를 불러오지 못했습니다: " +
+        (error && error.message ? error.message : error);
+    }
+  }
+}
+
 function getMapStatusColor(status) {
   if (status === "CONGESTED") return "#ef4444";
   if (status === "SLOW") return "#f59e0b";
@@ -350,11 +381,47 @@ function renderTrafficMap(rows) {
       })
     : candidates;
 
-  const plotted = filtered.map(function(row) {
-    const point = getMapPoint(row);
-    if (!point) return null;
+  const plotted = [];
 
+  filtered.forEach(function(row) {
     const color = getMapStatusColor(row.status);
+    const startLat = Number(row.startLatitude);
+    const startLng = Number(row.startLongitude);
+    const endLat = Number(row.endLatitude);
+    const endLng = Number(row.endLongitude);
+
+    const popup =
+      '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong><br>' +
+      escapeHtml(row.startName || "-") + ' → ' + escapeHtml(row.endName || "-") + '<br>' +
+      '<strong>' + formatNumber(row.speed, 1) + ' km/h</strong> · ' +
+      escapeHtml(row.statusText || "정보 없음");
+
+    if (
+      Number.isFinite(startLat) &&
+      Number.isFinite(startLng) &&
+      Number.isFinite(endLat) &&
+      Number.isFinite(endLng)
+    ) {
+      const line = window.L.polyline(
+        [[startLat, startLng], [endLat, endLng]],
+        {
+          color,
+          weight: row.status === "CONGESTED" ? 7 : row.status === "SLOW" ? 5 : 4,
+          opacity: 0.8
+        }
+      );
+
+      line.bindPopup(popup);
+      line.addTo(state.mapLayer);
+
+      plotted.push({ latitude: startLat, longitude: startLng });
+      plotted.push({ latitude: endLat, longitude: endLng });
+      return;
+    }
+
+    const point = getMapPoint(row);
+    if (!point) return;
+
     const marker = window.L.circleMarker(
       [point.latitude, point.longitude],
       {
@@ -366,16 +433,10 @@ function renderTrafficMap(rows) {
       }
     );
 
-    marker.bindPopup(
-      '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong><br>' +
-      escapeHtml(row.startName || "-") + ' → ' + escapeHtml(row.endName || "-") + '<br>' +
-      '<strong>' + formatNumber(row.speed, 1) + ' km/h</strong> · ' +
-      escapeHtml(row.statusText || "정보 없음")
-    );
-
+    marker.bindPopup(popup);
     marker.addTo(state.mapLayer);
-    return point;
-  }).filter(Boolean);
+    plotted.push(point);
+  });
 
   if (plotted.length > 0) {
     const bounds = window.L.latLngBounds(
@@ -392,7 +453,13 @@ function renderTrafficMap(rows) {
 
   if (mapMessage) {
     const coordinateCount = candidates.filter(function(row) {
-      return Boolean(getMapPoint(row));
+      return Boolean(getMapPoint(row)) ||
+        (
+          Number.isFinite(Number(row.startLatitude)) &&
+          Number.isFinite(Number(row.startLongitude)) &&
+          Number.isFinite(Number(row.endLatitude)) &&
+          Number.isFinite(Number(row.endLongitude))
+        );
     }).length;
 
     if (coordinateCount === 0) {
@@ -950,6 +1017,7 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     renderSuddenCongestion(state.suddenCongestion);
     renderTrafficBriefing(payload.trafficBriefing || null);
     renderTrafficMap(state.rawData);
+    loadTrafficMap(state.regionKey);
     renderTable();
 
     const cacheLabel = payload.cache === "SNAPSHOT" ? "백그라운드 스냅샷" : "스냅샷";
