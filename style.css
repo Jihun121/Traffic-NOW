@@ -1593,6 +1593,7 @@ html[data-theme="light"] .top10-road,
 html[data-theme="light"] .briefing-headline,
 html[data-theme="light"] .briefing-metric strong,
 html[data-theme="light"] .commute-period,
+html[data-theme="light"] .commute-metrics strong,
 html[data-theme="light"] .history-metric strong,
 html[data-theme="light"] .sudden-road {
   color: var(--text-heading);
