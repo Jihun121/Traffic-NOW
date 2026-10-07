@@ -701,12 +701,27 @@ function ensureTrafficMap() {
 
     canvas.addEventListener("click", function(event) {
       const zoomButton = event.target.closest("[data-map-zoom]");
+      const popupCloseButton = event.target.closest(".traffic-map-popup-close");
+
+      if (popupCloseButton) return;
+
       if (!zoomButton) {
         if (state.map.didDrag) {
           state.map.didDrag = false;
+          return;
+        }
+
+        if (
+          state.map.popup &&
+          !state.map.popup.hidden &&
+          !event.target.closest(".traffic-map-hit") &&
+          !event.target.closest(".traffic-map-popup")
+        ) {
+          state.map.popup.hidden = true;
         }
         return;
       }
+
       zoomTo(zoomButton.dataset.mapZoom === "in" ? 1 : -1);
     });
 
@@ -870,18 +885,32 @@ function renderTrafficMap(rows) {
         [width / 2, height / 2];
 
       state.map.popup.innerHTML =
-        "<strong>" + escapeHtml(row.roadName || "도로명 없음") + "</strong><br>" +
+        '<div class="traffic-map-popup-head">' +
+          '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong>' +
+          '<button type="button" class="traffic-map-popup-close" aria-label="팝업 닫기">×</button>' +
+        '</div>' +
         escapeHtml(row.startName || "-") + " → " + escapeHtml(row.endName || "-") + "<br>" +
         "<strong>" + formatNumber(row.speed, 1) + " km/h</strong> · " +
         escapeHtml(row.statusText || "정보 없음") + "<br>" +
         escapeHtml(row.categoryName || "일반도로") + "<br>" +
-        '<span style="font-size:11px;color:#64748b">갱신 ' +
+        '<span class="traffic-map-popup-meta">갱신 ' +
         escapeHtml(formatApiDate(row.updatedAt)) + " · LINK_ID " +
         escapeHtml(row.linkId || "-") + "</span>";
 
       state.map.popup.style.left = Math.min(Math.max(point[0] + 8, 8), width - 238) + "px";
       state.map.popup.style.top = Math.min(Math.max(point[1] + 8, 8), height - 132) + "px";
       state.map.popup.hidden = false;
+
+      const closeButton = state.map.popup.querySelector(".traffic-map-popup-close");
+      if (closeButton) {
+        closeButton.addEventListener("pointerdown", function(event) {
+          event.stopPropagation();
+        });
+        closeButton.addEventListener("click", function(event) {
+          event.stopPropagation();
+          state.map.popup.hidden = true;
+        });
+      }
     });
   });
 
