@@ -318,9 +318,9 @@ h1 {
 }
 
 .top10-item.top10-clickable:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .top10-item.top10-clickable:hover {
