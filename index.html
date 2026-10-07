@@ -46,16 +46,24 @@
         </div>
       </div>
     </header>
-    <nav class="quick-nav" aria-label="빠른 이동">
-      <a href="#overview">핵심 통계</a>
-      <a href="#top10">정체 TOP 10</a>
-      <a href="#map">실시간 지도</a>
-      <a href="#sudden">급격한 정체</a>
-      <a href="#briefing">교통 브리핑</a>
-      <a href="#commute">출퇴근</a>
-      <a href="#history">타임머신</a>
-      <a href="#detail">상세 조회</a>
+    <nav class="dashboard-tabs" id="dashboardTabs" aria-label="대시보드 메뉴">
+      <button type="button" class="dashboard-tab active" data-tab="dashboard" aria-selected="true">
+        <span class="dashboard-tab-title">실시간 현황</span>
+        <span class="dashboard-tab-sub">부산 전체 상태 · 정체 TOP 10</span>
+      </button>
+      <button type="button" class="dashboard-tab" data-tab="live" aria-selected="false">
+        <span class="dashboard-tab-title">지도 · 도로 조회</span>
+        <span class="dashboard-tab-sub">권역 선택 · 실시간 지도 · 상세 정보</span>
+      </button>
+      <button type="button" class="dashboard-tab" data-tab="analysis" aria-selected="false">
+        <span class="dashboard-tab-title">교통 분석</span>
+        <span class="dashboard-tab-sub">급격한 정체 · 브리핑 · 출퇴근 · 이력</span>
+      </button>
     </nav>
+    <div id="dashboardContext" class="dashboard-context" aria-live="polite">
+      <strong>실시간 현황</strong>
+      <span>현재 부산 교통 상태와 가장 심한 정체 구간을 먼저 확인하세요.</span>
+    </div>
 
     <!-- 2. 부산 전체 통계 요약 카드 (두번째 이미지: 부산 전체 통계) -->
 
@@ -74,6 +82,7 @@
     <!-- 4. 도로별 상세 조회 및 필터 테이블 -->
 
 
+    <div id="tab-dashboard" class="dashboard-tab-panel active" data-panel="dashboard">
     <section id="overview" class="section-container">
       <div class="section-title-wrap">
         <h2 id="overview-title">📊 부산 전체 교통 통계</h2>
@@ -144,7 +153,9 @@
         <div class="loading-placeholder">정체 TOP 10 데이터를 분석하고 있습니다...</div>
       </div>
     </section>
+    </div>
 
+    <div id="tab-live" class="dashboard-tab-panel" data-panel="live">
     <section id="map" class="section-container">
       <div class="section-title-wrap">
         <div>
@@ -244,7 +255,9 @@
         <span id="resultCountLabel">조회 결과: 0건</span>
       </div>
     </section>
+    </div>
 
+    <div id="tab-analysis" class="dashboard-tab-panel" data-panel="analysis">
     <section id="sudden" class="section-container">
       <div class="section-title-wrap">
         <div>
@@ -393,6 +406,7 @@
         </div>
       </div>
     </section>
+    </div>
 
 
 
