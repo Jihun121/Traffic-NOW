@@ -957,7 +957,8 @@ export default {
         return;
       }
 
-      // 한 사이클을 모두 모았을 때만 기존 latest를 새 전체 스냅샷으로 교체한다.
+      // 한 사이클이 모두 끝나면 이번 사이클에서 실제로 확인된 링크만 남겨
+      // 오래된 링크를 정리하고 완성 스냅샷으로 확정한다.
       const sourceParts = ["부산광역시 링크소통정보"];
       const warnings = [];
       const rows = accumulator.filter((row) => seenKeys.has(getTrafficRowKey(row)));
