@@ -34,6 +34,9 @@ const statusText = document.querySelector("#statusText");
 const refreshButton = document.querySelector("#refreshButton");
 const updatedAtLabel = document.querySelector("#updatedAtLabel");
 const autoRefreshLabel = document.querySelector("#autoRefreshLabel");
+const regionTabs = document.querySelector("#regionTabs");
+const selectedRegionLabel = document.querySelector("#selectedRegionLabel");
+const detailRegionBadge = document.querySelector("#detailRegionBadge");
 const themeLightButton = document.querySelector("#themeLightButton");
 const themeDarkButton = document.querySelector("#themeDarkButton");
 
@@ -98,6 +101,35 @@ const mapMessage = document.querySelector("#mapMessage");
 const mapAllButton = document.querySelector("#mapAllButton");
 const mapCongestedButton = document.querySelector("#mapCongestedButton");
 
+
+
+function updateRegionSelection(regionKey, regionName) {
+  const buttons = document.querySelectorAll("#regionTabs .region-btn");
+  buttons.forEach(function(button) {
+    const active = button.dataset.region === regionKey;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+
+  const fallbackNames = {
+    busan: "부산 전체",
+    "busan-expressway": "도시고속·대교",
+    "busan-north-gu": "북구",
+    "busan-haeundae": "해운대·수영",
+    "busan-jin": "부산진·서면",
+    "busan-dongrae-yeonje": "동래·연제",
+    "busan-nam": "남구",
+    "busan-donggu": "동구",
+    "busan-saha-gangseo": "사하·강서",
+    "busan-sasang": "사상",
+    "busan-geumjeong": "금정",
+    "busan-jung-seo-yeongdo": "중구·서구·영도"
+  };
+
+  const label = regionName || fallbackNames[regionKey] || "부산 전체";
+  if (selectedRegionLabel) selectedRegionLabel.textContent = label;
+  if (detailRegionBadge) detailRegionBadge.textContent = label;
+}
 
 function applyTheme(theme, persist = true) {
   const nextTheme = theme === "light" ? "light" : "dark";
@@ -1362,6 +1394,7 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     state.snapshotFetchedAt = payload.updatedAt || "";
     state.snapshotRegionKey = regionKey;
     state.snapshotType = payload.snapshotType || "COMPLETE";
+    updateRegionSelection(regionKey, payload.region?.name || "");
 
     if (snapshotChanged || state.rawData.length === 0) {
       state.rawData = Array.isArray(payload.data) ? payload.data : [];
@@ -1498,12 +1531,10 @@ if (historyRefreshButton) {
   });
 }
 
-// 이벤트 리스너 등록
-document.querySelectorAll(".tab-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    loadTraffic(btn.dataset.region);
+// 권역 선택: 지도와 도로별 상세 조회에 동시에 적용
+document.querySelectorAll("#regionTabs .region-btn").forEach((btn) => {
+  btn.addEventListener("click", function() {
+    loadTraffic(btn.dataset.region || "busan");
   });
 });
 
@@ -1541,6 +1572,7 @@ if (themeDarkButton) {
 }
 
 initTheme();
+updateRegionSelection("busan", "부산 전체");
 
 // 최초 실행: 부산 전체 로드
 loadTraffic("busan");
