@@ -34,6 +34,8 @@ const statusText = document.querySelector("#statusText");
 const refreshButton = document.querySelector("#refreshButton");
 const updatedAtLabel = document.querySelector("#updatedAtLabel");
 const autoRefreshLabel = document.querySelector("#autoRefreshLabel");
+const themeLightButton = document.querySelector("#themeLightButton");
+const themeDarkButton = document.querySelector("#themeDarkButton");
 
 const statAvgSpeed = document.querySelector("#statAvgSpeed");
 const statTrafficIndex = document.querySelector("#statTrafficIndex");
@@ -95,6 +97,36 @@ const trafficMap = document.querySelector("#trafficMap");
 const mapMessage = document.querySelector("#mapMessage");
 const mapAllButton = document.querySelector("#mapAllButton");
 const mapCongestedButton = document.querySelector("#mapCongestedButton");
+
+
+function applyTheme(theme, persist = true) {
+  const nextTheme = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = nextTheme;
+
+  if (persist) {
+    try {
+      localStorage.setItem("traffic-now-theme", nextTheme);
+    } catch {}
+  }
+
+  if (themeLightButton) {
+    themeLightButton.classList.toggle("active", nextTheme === "light");
+    themeLightButton.setAttribute("aria-pressed", nextTheme === "light" ? "true" : "false");
+  }
+
+  if (themeDarkButton) {
+    themeDarkButton.classList.toggle("active", nextTheme === "dark");
+    themeDarkButton.setAttribute("aria-pressed", nextTheme === "dark" ? "true" : "false");
+  }
+}
+
+function initTheme() {
+  let savedTheme = "dark";
+  try {
+    savedTheme = localStorage.getItem("traffic-now-theme") || "dark";
+  } catch {}
+  applyTheme(savedTheme, false);
+}
 
 function setStatus(text, active = false) {
   if (statusText) statusText.textContent = text;
@@ -250,11 +282,20 @@ function renderTable() {
           ${escapeHtml(row.statusText || "원활")}
         </span>
       </td>
-      <td><strong>${escapeHtml(row.roadName || "도로명 없음")}</strong></td>
-      <td><span style="color: var(--text-dim); font-size: 12px;">${escapeHtml(row.categoryName || "일반도로")}</span></td>
-      <td>${escapeHtml(row.startName || "-")} → ${escapeHtml(row.endName || "-")}</td>
-      <td><strong style="color: ${row.statusColor || "#fff"};">${formatNumber(row.speed, 1)} km/h</strong></td>
-      <td><code style="color: var(--text-dim); font-size: 11px;">${escapeHtml(row.linkId || "-")}</code></td>
+      <td>
+        <span class="detail-road-name">${escapeHtml(row.roadName || "도로명 없음")}</span>
+        <span class="detail-road-meta">${escapeHtml(row.categoryName || "일반도로")} · 링크 ${escapeHtml(row.linkId || "-")}</span>
+      </td>
+      <td>
+        <span class="detail-section" title="${escapeHtml((row.startName || "-") + " → " + (row.endName || "-"))}">
+          ${escapeHtml(row.startName || "-")} → ${escapeHtml(row.endName || "-")}
+        </span>
+      </td>
+      <td>
+        <strong class="detail-speed" style="color: ${row.statusColor || "inherit"};">
+          ${formatNumber(row.speed, 1)} km/h
+        </strong>
+      </td>
     </tr>
   `).join("");
 
@@ -1485,6 +1526,21 @@ if (onlyCongestedCheck) {
     renderTable();
   });
 }
+
+
+if (themeLightButton) {
+  themeLightButton.addEventListener("click", function() {
+    applyTheme("light");
+  });
+}
+
+if (themeDarkButton) {
+  themeDarkButton.addEventListener("click", function() {
+    applyTheme("dark");
+  });
+}
+
+initTheme();
 
 // 최초 실행: 부산 전체 로드
 loadTraffic("busan");
