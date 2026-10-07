@@ -37,6 +37,9 @@ const autoRefreshLabel = document.querySelector("#autoRefreshLabel");
 const regionTabs = document.querySelector("#regionTabs");
 const selectedRegionLabel = document.querySelector("#selectedRegionLabel");
 const detailRegionBadge = document.querySelector("#detailRegionBadge");
+const dashboardTabs = document.querySelectorAll("#dashboardTabs .dashboard-tab");
+const dashboardPanels = document.querySelectorAll(".dashboard-tab-panel");
+const dashboardContext = document.querySelector("#dashboardContext");
 const themeLightButton = document.querySelector("#themeLightButton");
 const themeDarkButton = document.querySelector("#themeDarkButton");
 
@@ -102,6 +105,51 @@ const mapAllButton = document.querySelector("#mapAllButton");
 const mapCongestedButton = document.querySelector("#mapCongestedButton");
 
 
+
+
+function setDashboardTab(tabKey) {
+  const contextMap = {
+    dashboard: {
+      title: "실시간 현황",
+      description: "현재 부산 교통 상태와 가장 심한 정체 구간을 먼저 확인하세요."
+    },
+    live: {
+      title: "지도 · 도로 조회",
+      description: "권역을 선택하면 지도와 도로별 상세 소통 정보가 함께 바뀝니다."
+    },
+    analysis: {
+      title: "교통 분석",
+      description: "갑작스러운 정체, 교통 브리핑, 출퇴근 비교, 과거 흐름을 확인하세요."
+    }
+  };
+
+  dashboardTabs.forEach(function(button) {
+    const active = button.dataset.tab === tabKey;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+
+  dashboardPanels.forEach(function(panel) {
+    panel.classList.toggle("active", panel.dataset.panel === tabKey);
+  });
+
+  const context = contextMap[tabKey] || contextMap.dashboard;
+  if (dashboardContext) {
+    dashboardContext.innerHTML =
+      "<strong>" + escapeHtml(context.title) + "</strong>" +
+      "<span>" + escapeHtml(context.description) + "</span>";
+  }
+
+  if (tabKey === "live") {
+    window.requestAnimationFrame(function() {
+      if (state.mapRows.length > 0) {
+        renderTrafficMap(state.mapRows);
+      } else {
+        loadTrafficMap(state.regionKey || "busan");
+      }
+    });
+  }
+}
 
 function updateRegionSelection(regionKey, regionName) {
   const buttons = document.querySelectorAll("#regionTabs .region-btn");
@@ -1559,6 +1607,12 @@ if (onlyCongestedCheck) {
 }
 
 
+dashboardTabs.forEach(function(button) {
+  button.addEventListener("click", function() {
+    setDashboardTab(button.dataset.tab || "dashboard");
+  });
+});
+
 if (themeLightButton) {
   themeLightButton.addEventListener("click", function() {
     applyTheme("light");
@@ -1573,6 +1627,7 @@ if (themeDarkButton) {
 
 initTheme();
 updateRegionSelection("busan", "부산 전체");
+setDashboardTab("dashboard");
 
 // 최초 실행: 부산 전체 로드
 loadTraffic("busan");
