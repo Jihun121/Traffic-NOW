@@ -303,9 +303,16 @@ function renderTop10(top10List) {
     const rank = idx + 1;
     const rankClass = rank === 1 ? "top-1" : rank === 2 ? "top-2" : rank === 3 ? "top-3" : "";
     const cardRankClass = rank === 1 ? "rank-1" : "";
+    const linkId = String(item.linkId || "");
 
     return `
-      <article class="top10-item ${cardRankClass}">
+      <article
+        class="top10-item top10-clickable ${cardRankClass}"
+        data-top10-link="${escapeHtml(linkId)}"
+        role="button"
+        tabindex="0"
+        aria-label="${escapeHtml((item.roadName || "도로명 없음") + " 지도에서 보기")}"
+      >
         <div class="top10-header">
           <span class="rank-badge ${rankClass}">${rank}위</span>
           <span class="status-badge ${item.status || "CONGESTED"}">${escapeHtml(item.statusText || "정체")}</span>
@@ -318,9 +325,30 @@ function renderTop10(top10List) {
           <span class="top10-speed">${formatNumber(item.speed, 1)} km/h</span>
           <span class="top10-cat">${escapeHtml(item.categoryName || "도로")}</span>
         </div>
+        <div class="top10-map-hint">클릭하면 지도에서 위치 확인</div>
       </article>
     `;
   }).join("");
+
+  top10Container.querySelectorAll("[data-top10-link]").forEach(function(card) {
+    const activate = function() {
+      const linkId = String(card.dataset.top10Link || "");
+      if (!linkId) return;
+      const item = state.top10.find(function(candidate) {
+        return String(candidate?.linkId || "") === linkId;
+      });
+      if (!item) return;
+
+      focusTrafficMapRow(item);
+    };
+
+    card.addEventListener("click", activate);
+    card.addEventListener("keydown", function(event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      activate();
+    });
+  });
 }
 
 // 3. 상세 도로 테이블 렌더링
@@ -774,6 +802,150 @@ function renderMapTiles() {
   tiles.innerHTML = html;
 }
 
+function getMapRowScreenPoint(row) {
+  if (!state.map || !row) return null;
+
+  const width = state.map.canvas.clientWidth;
+  const height = state.map.canvas.clientHeight;
+  if (!width || !height) return null;
+
+  const geometry = state.mapGeometry?.[String(row.linkId || "")];
+  const latLngs = geometryToLatLngs(geometry);
+  let latitude = null;
+  let longitude = null;
+
+  if (latLngs && latLngs.length > 0) {
+    const point = latLngs[Math.floor(latLngs.length / 2)];
+    latitude = Number(point[0]);
+    longitude = Number(point[1]);
+  } else {
+    const fallback = getMapPoint(row);
+    if (fallback) {
+      latitude = fallback.latitude;
+      longitude = fallback.longitude;
+    }
+  }
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  const center = mapProject(state.map.center.lng, state.map.center.lat, state.map.zoom);
+  const point = mapProject(longitude, latitude, state.map.zoom);
+
+  return {
+    x: point.x - center.x + width / 2,
+    y: point.y - center.y + height / 2
+  };
+}
+
+function openTrafficMapPopup(row, point) {
+  if (!state.map?.popup || !row) return;
+
+  const width = state.map.canvas.clientWidth;
+  const height = state.map.canvas.clientHeight;
+  const safePoint = point || [width / 2, height / 2];
+  const safeWidth = Math.max(240, width);
+  const safeHeight = Math.max(132, height);
+
+  state.map.popup.innerHTML =
+    '<div class="traffic-map-popup-head">' +
+      '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong>' +
+      '<button type="button" class="traffic-map-popup-close" aria-label="팝업 닫기">×</button>' +
+    '</div>' +
+    escapeHtml(row.startName || "-") + " → " + escapeHtml(row.endName || "-") + "<br>" +
+    "<strong>" + formatNumber(row.speed, 1) + " km/h</strong> · " +
+    escapeHtml(row.statusText || "정보 없음") + "<br>" +
+    escapeHtml(row.categoryName || "일반도로") + "<br>" +
+    '<span class="traffic-map-popup-meta">갱신 ' +
+    escapeHtml(formatApiDate(row.updatedAt)) + " · LINK_ID " +
+    escapeHtml(row.linkId || "-") + "</span>";
+
+  state.map.popup.style.left = Math.min(Math.max(safePoint.x !== undefined ? safePoint.x + 8 : safePoint[0] + 8, 8), safeWidth - 238) + "px";
+  state.map.popup.style.top = Math.min(Math.max(safePoint.y !== undefined ? safePoint.y + 8 : safePoint[1] + 8, 8), safeHeight - 132) + "px";
+  state.map.popup.hidden = false;
+
+  const closeButton = state.map.popup.querySelector(".traffic-map-popup-close");
+  if (closeButton) {
+    closeButton.addEventListener("pointerdown", function(event) {
+      event.stopPropagation();
+    });
+    closeButton.addEventListener("click", function(event) {
+      event.stopPropagation();
+      state.map.popup.hidden = true;
+    });
+  }
+}
+
+async function focusTrafficMapRow(top10Item) {
+  if (!top10Item?.linkId) return;
+
+  setDashboardTab("live");
+  state.mapFilter = "all";
+  if (mapAllButton) mapAllButton.classList.add("active");
+  if (mapCongestedButton) mapCongestedButton.classList.remove("active");
+
+  // TOP 10은 부산 전체 기준이므로 특정 권역을 보고 있었다면 부산 전체 지도로 전환한다.
+  if (state.regionKey !== "busan") {
+    const loaded = await loadTraffic("busan", false);
+    if (!loaded) return;
+  }
+
+  if (!state.map || !state.mapRows.some(function(row) {
+    return String(row.linkId || "") === String(top10Item.linkId || "");
+  })) {
+    await loadTrafficMap("busan");
+  }
+
+  if (!state.map) return;
+
+  const mapRow = state.mapRows.find(function(row) {
+    return String(row.linkId || "") === String(top10Item.linkId || "");
+  });
+
+  if (!mapRow) {
+    if (mapMessage) {
+      mapMessage.textContent = "선택한 TOP 10 도로의 지도 선형을 찾지 못했습니다.";
+    }
+    return;
+  }
+
+  const geometry = state.mapGeometry?.[String(mapRow.linkId || "")];
+  const latLngs = geometryToLatLngs(geometry);
+
+  let targetLatitude = null;
+  let targetLongitude = null;
+
+  if (latLngs && latLngs.length > 0) {
+    const target = latLngs[Math.floor(latLngs.length / 2)];
+    targetLatitude = Number(target[0]);
+    targetLongitude = Number(target[1]);
+  } else {
+    const fallback = getMapPoint(mapRow);
+    if (fallback) {
+      targetLatitude = fallback.latitude;
+      targetLongitude = fallback.longitude;
+    }
+  }
+
+  if (!Number.isFinite(targetLatitude) || !Number.isFinite(targetLongitude)) {
+    return;
+  }
+
+  state.map.zoom = Math.max(13, Number(state.map.zoom) || 13);
+  state.map.center = {
+    lng: targetLongitude,
+    lat: targetLatitude
+  };
+  state.map.centerManuallySet = true;
+  renderTrafficMap(state.mapRows);
+
+  const point = getMapRowScreenPoint(mapRow) || {
+    x: state.map.canvas.clientWidth / 2,
+    y: state.map.canvas.clientHeight / 2
+  };
+
+  openTrafficMapPopup(mapRow, point);
+}
+
 function renderTrafficMap(rows) {
   rowsForMapRender = Array.isArray(rows) ? rows : [];
   if (!trafficMap) return false;
@@ -884,33 +1056,7 @@ function renderTrafficMap(rows) {
       const point = item.screenPoints[Math.floor(item.screenPoints.length / 2)] ||
         [width / 2, height / 2];
 
-      state.map.popup.innerHTML =
-        '<div class="traffic-map-popup-head">' +
-          '<strong>' + escapeHtml(row.roadName || "도로명 없음") + '</strong>' +
-          '<button type="button" class="traffic-map-popup-close" aria-label="팝업 닫기">×</button>' +
-        '</div>' +
-        escapeHtml(row.startName || "-") + " → " + escapeHtml(row.endName || "-") + "<br>" +
-        "<strong>" + formatNumber(row.speed, 1) + " km/h</strong> · " +
-        escapeHtml(row.statusText || "정보 없음") + "<br>" +
-        escapeHtml(row.categoryName || "일반도로") + "<br>" +
-        '<span class="traffic-map-popup-meta">갱신 ' +
-        escapeHtml(formatApiDate(row.updatedAt)) + " · LINK_ID " +
-        escapeHtml(row.linkId || "-") + "</span>";
-
-      state.map.popup.style.left = Math.min(Math.max(point[0] + 8, 8), width - 238) + "px";
-      state.map.popup.style.top = Math.min(Math.max(point[1] + 8, 8), height - 132) + "px";
-      state.map.popup.hidden = false;
-
-      const closeButton = state.map.popup.querySelector(".traffic-map-popup-close");
-      if (closeButton) {
-        closeButton.addEventListener("pointerdown", function(event) {
-          event.stopPropagation();
-        });
-        closeButton.addEventListener("click", function(event) {
-          event.stopPropagation();
-          state.map.popup.hidden = true;
-        });
-      }
+      openTrafficMapPopup(row, point);
     });
   });
 
