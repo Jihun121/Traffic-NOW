@@ -681,7 +681,8 @@ export default {
       // 1. 부산 데이터 수집
       // Workers Free의 invocation당 subrequest 제한을 피하기 위해
       // 매 10분마다 3페이지씩 순환 수집한다.
-      // 한 사이클이 끝날 때까지 기존 latest 스냅샷은 유지한다.
+      // 각 배치가 끝날 때마다 갱신된 링크를 latest에 즉시 반영하고,
+      // 전체 사이클이 완료되면 오래된 링크를 정리한 완성 스냅샷으로 교체한다.
       let state = await env.TRAFFIC_CACHE.get(COLLECTOR_STATE_KEY, "json");
 
       // collectorVersion이 없는 기존 진행 상태는 새 점진 수집 사이클로 안전하게 전환한다.
