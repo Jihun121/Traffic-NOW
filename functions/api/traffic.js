@@ -70,6 +70,11 @@ export async function onRequestGet(context) {
     const payload = {
       ok: true,
       source: snapshot.source || "부산광역시 링크소통정보",
+      snapshotType: snapshot.snapshotType || "COMPLETE",
+      collection: snapshot.collection || {
+        mode: "complete",
+        cycleComplete: true
+      },
       region: {
         key: regionKey,
         name: region.name
@@ -88,6 +93,9 @@ export async function onRequestGet(context) {
       cache: "SNAPSHOT",
       warning: snapshot.warning || null,
       refreshRequested,
+      dataFreshness: snapshot.snapshotType === "INCREMENTAL"
+        ? "PARTIAL_LIVE"
+        : "COMPLETE_CYCLE",
       timing: {
         totalMs: Date.now() - startedAt
       }
