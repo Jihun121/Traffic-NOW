@@ -266,7 +266,7 @@ function renderTable() {
   if (filtered.length === 0) {
     trafficTable.innerHTML = `
       <tr>
-        <td colspan="6" style="text-align: center; padding: 30px; color: var(--text-dim);">
+        <td colspan="4" style="text-align: center; padding: 30px; color: var(--text-dim);">
           조건에 부합하는 도로 소통 정보가 없습니다.
         </td>
       </tr>
