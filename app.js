@@ -601,6 +601,9 @@ function ensureTrafficMap() {
       dragging: false,
       dragX: 0,
       dragY: 0,
+      dragStartX: 0,
+      dragStartY: 0,
+      didDrag: false,
       centerManuallySet: false
     };
     state.mapLayer = null;
@@ -642,6 +645,9 @@ function ensureTrafficMap() {
       state.map.dragging = true;
       state.map.dragX = event.clientX;
       state.map.dragY = event.clientY;
+      state.map.dragStartX = event.clientX;
+      state.map.dragStartY = event.clientY;
+      state.map.didDrag = false;
       state.map.centerManuallySet = true;
       canvas.setPointerCapture(event.pointerId);
       canvas.classList.add("is-dragging");
@@ -653,6 +659,12 @@ function ensureTrafficMap() {
       const dy = event.clientY - state.map.dragY;
       state.map.dragX = event.clientX;
       state.map.dragY = event.clientY;
+      if (
+        Math.abs(event.clientX - state.map.dragStartX) > 5 ||
+        Math.abs(event.clientY - state.map.dragStartY) > 5
+      ) {
+        state.map.didDrag = true;
+      }
 
       const centerWorld = mapProject(state.map.center.lng, state.map.center.lat, state.map.zoom);
       state.map.center = mapUnproject(
@@ -676,7 +688,12 @@ function ensureTrafficMap() {
 
     canvas.addEventListener("click", function(event) {
       const zoomButton = event.target.closest("[data-map-zoom]");
-      if (!zoomButton) return;
+      if (!zoomButton) {
+        if (state.map.didDrag) {
+          state.map.didDrag = false;
+        }
+        return;
+      }
       zoomTo(zoomButton.dataset.mapZoom === "in" ? 1 : -1);
     });
 
@@ -746,7 +763,7 @@ function renderTrafficMap(rows) {
     SLOW: [],
     CONGESTED: []
   };
-  const detailRows = [];
+  const clickRows = [];
   const bounds = [];
 
   const width = state.map.canvas.clientWidth;
@@ -772,8 +789,13 @@ function renderTrafficMap(rows) {
     const status = row.status === "SLOW" || row.status === "CONGESTED" ? row.status : "SMOOTH";
     groups[status].push(screenPoints);
 
-    if (detailRows.length < 250 && (row.status === "CONGESTED" || row.status === "SLOW")) {
-      detailRows.push({ row, screenPoints });
+    const isVisible = screenPoints.some(function(point) {
+      return point[0] >= -40 && point[0] <= width + 40 &&
+        point[1] >= -40 && point[1] <= height + 40;
+    });
+
+    if (isVisible && clickRows.length < 1000) {
+      clickRows.push({ row, screenPoints });
     }
 
     screenPoints.forEach(function(point) {
@@ -810,7 +832,7 @@ function renderTrafficMap(rows) {
       '" stroke-linecap="round" stroke-linejoin="round"></path>';
   });
 
-  detailRows.forEach(function(item, index) {
+  clickRows.forEach(function(item, index) {
     svg += '<path class="traffic-map-hit" data-map-row="' + index + '" d="' +
       makePath([item.screenPoints]) +
       '" fill="none" stroke="transparent" stroke-width="14" stroke-linecap="round"></path>';
@@ -821,7 +843,13 @@ function renderTrafficMap(rows) {
   state.map.svg.querySelectorAll("[data-map-row]").forEach(function(node) {
     node.addEventListener("click", function(event) {
       event.stopPropagation();
-      const item = detailRows[Number(node.dataset.mapRow)];
+
+      if (state.map.didDrag) {
+        state.map.didDrag = false;
+        return;
+      }
+
+      const item = clickRows[Number(node.dataset.mapRow)];
       if (!item) return;
 
       const row = item.row;
@@ -833,10 +861,13 @@ function renderTrafficMap(rows) {
         escapeHtml(row.startName || "-") + " → " + escapeHtml(row.endName || "-") + "<br>" +
         "<strong>" + formatNumber(row.speed, 1) + " km/h</strong> · " +
         escapeHtml(row.statusText || "정보 없음") + "<br>" +
-        '<span style="font-size:11px;color:#64748b">LINK_ID ' +
+        escapeHtml(row.categoryName || "일반도로") + "<br>" +
+        '<span style="font-size:11px;color:#64748b">갱신 ' +
+        escapeHtml(formatApiDate(row.updatedAt)) + " · LINK_ID " +
         escapeHtml(row.linkId || "-") + "</span>";
+
       state.map.popup.style.left = Math.min(Math.max(point[0] + 8, 8), width - 238) + "px";
-      state.map.popup.style.top = Math.min(Math.max(point[1] + 8, 8), height - 120) + "px";
+      state.map.popup.style.top = Math.min(Math.max(point[1] + 8, 8), height - 132) + "px";
       state.map.popup.hidden = false;
     });
   });
