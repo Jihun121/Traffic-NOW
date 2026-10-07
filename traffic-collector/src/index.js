@@ -684,10 +684,21 @@ export default {
       // 한 사이클이 끝날 때까지 기존 latest 스냅샷은 유지한다.
       let state = await env.TRAFFIC_CACHE.get(COLLECTOR_STATE_KEY, "json");
 
+      // collectorVersion이 없는 기존 진행 상태는 새 점진 수집 사이클로 안전하게 전환한다.
+      const incrementalCollectorEnabled = Number(state?.collectorVersion || 0) === 2;
+      const cycleInProgress = incrementalCollectorEnabled && state?.inProgress === true;
+      const previousSnapshot =
+        (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
+
       let currentPage = Number(state?.currentPage || 1);
       let totalPages = Number(state?.totalPages || 0);
       let reportedTotalCount = Number(state?.reportedTotalCount || 0);
-      const cycleInProgress = state?.inProgress === true;
+      let cycleStartedAt = state?.cycleStartedAt || null;
+      let seenKeys = new Set(
+        Array.isArray(state?.seenKeys)
+          ? state.seenKeys.map((key) => String(key))
+          : []
+      );
 
       if (!Number.isInteger(currentPage) || currentPage < 1) currentPage = 1;
 
@@ -712,11 +723,18 @@ export default {
         accumulator = (await env.TRAFFIC_CACHE.get(COLLECTOR_ACCUMULATOR_KEY, "json")) || [];
         if (!Array.isArray(accumulator)) accumulator = [];
       } else {
-        // 이전 사이클 완료 상태라면 새 사이클을 시작한다.
-        accumulator = [];
+        // 새 사이클은 직전 스냅샷을 베이스로 시작한다.
+        // 이번 사이클에서 새로 수집된 링크만 즉시 최신 값으로 덮어쓴다.
+        accumulator = Array.isArray(previousSnapshot?.rows)
+          ? previousSnapshot.rows
+          : [];
         completedPages = new Set();
         failedPages = new Set();
+        seenKeys = new Set();
         currentPage = 1;
+        totalPages = 0;
+        reportedTotalCount = 0;
+        cycleStartedAt = new Date().toISOString();
       }
 
       const pageNumbers = [];
@@ -828,10 +846,9 @@ export default {
       }
 
       for (const row of batchRows) {
-        const key = row.linkId
-          ? `link:${row.linkId}`
-          : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
+        const key = getTrafficRowKey(row);
         mergedRows.set(key, row);
+        seenKeys.add(key);
       }
 
       accumulator = Array.from(mergedRows.values());
@@ -865,25 +882,73 @@ export default {
         );
 
         const nextPage = Math.max(currentPage, sequentialPage);
+        const nowIso = new Date().toISOString();
+
         await env.TRAFFIC_CACHE.put(
           COLLECTOR_STATE_KEY,
           JSON.stringify({
+            collectorVersion: 2,
             inProgress: true,
             currentPage: totalPages > 0 && nextPage > totalPages ? 1 : nextPage,
             totalPages,
             reportedTotalCount,
             completedPages: [...completedPages].sort((a, b) => a - b),
             failedPages: [...failedPages].sort((a, b) => a - b),
-            updatedAt: new Date().toISOString()
+            seenKeys: [...seenKeys],
+            cycleStartedAt,
+            updatedAt: nowIso,
+            lastIncrementalUpdateAt: nowIso
           }),
           { expirationTtl: COLLECTION_TTL }
         );
 
+        const incrementalStats = calculateBusanStats(accumulator);
+        const incrementalTop10 = calculateTop10(accumulator);
+        const incrementalSnapshot = {
+          snapshotType: "INCREMENTAL",
+          source: "부산광역시 링크소통정보",
+          stats: incrementalStats,
+          top10: incrementalTop10,
+          trafficBriefing: previousSnapshot?.trafficBriefing || null,
+          suddenCongestion: previousSnapshot?.suddenCongestion || {
+            detectedCount: 0,
+            items: []
+          },
+          rows: accumulator,
+          totalCount: accumulator.length,
+          fetchedAt: nowIso,
+          durationMs: Date.now() - startedAt,
+          warning: "전체 수집 사이클 진행 중 · 일부 링크는 직전 스냅샷 값일 수 있습니다.",
+          collection: {
+            mode: "incremental",
+            cycleComplete: false,
+            cycleStartedAt,
+            reportedTotalCount,
+            totalPages,
+            pagesPerRun: PAGES_PER_RUN,
+            completedPages: completedPages.size,
+            failedPages: [...failedPages].sort((a, b) => a - b),
+            refreshedRows: batchRows.length,
+            refreshedLinks: seenKeys.size,
+            lastIncrementalUpdateAt: nowIso
+          }
+        };
+
+        if (Array.isArray(incrementalSnapshot.rows) && incrementalSnapshot.rows.length > 0) {
+          await env.TRAFFIC_CACHE.put(
+            SNAPSHOT_KEY,
+            JSON.stringify(incrementalSnapshot),
+            { expirationTtl: LATEST_SNAPSHOT_TTL }
+          );
+        }
+
         console.log({
-          event: "collector-batch-saved",
+          event: "collector-incremental-snapshot-saved",
           nextPage: totalPages > 0 && nextPage > totalPages ? 1 : nextPage,
           totalPages,
           accumulatedRows: accumulator.length,
+          refreshedRows: batchRows.length,
+          refreshedLinks: seenKeys.size,
           completedPages: completedPages.size,
           failedPages: [...failedPages].sort((a, b) => a - b)
         });
@@ -894,7 +959,7 @@ export default {
       // 한 사이클을 모두 모았을 때만 기존 latest를 새 전체 스냅샷으로 교체한다.
       const sourceParts = ["부산광역시 링크소통정보"];
       const warnings = [];
-      const rows = accumulator;
+      const rows = accumulator.filter((row) => seenKeys.has(getTrafficRowKey(row)));
 
       // 2. ITS 데이터 수집 (보조/광역)
       if (itsApiKey) {
@@ -970,6 +1035,7 @@ export default {
       );
 
       const snapshot = {
+        snapshotType: "COMPLETE",
         source: sourceParts.join(" & "),
         stats,
         top10,
@@ -983,7 +1049,14 @@ export default {
         collection: {
           reportedTotalCount,
           totalPages,
-          pagesPerRun: PAGES_PER_RUN
+          pagesPerRun: PAGES_PER_RUN,
+          mode: "complete",
+          cycleComplete: true,
+          cycleStartedAt,
+          completedPages: completedPages.size,
+          failedPages: [],
+          refreshedLinks: rows.length,
+          completedAt: new Date().toISOString()
         }
       };
 
@@ -1019,12 +1092,15 @@ export default {
       await env.TRAFFIC_CACHE.put(
         COLLECTOR_STATE_KEY,
         JSON.stringify({
+          collectorVersion: 2,
           inProgress: false,
           currentPage: 1,
           totalPages,
           reportedTotalCount,
           completedPages: [],
           failedPages: [],
+          seenKeys: [],
+          cycleStartedAt: null,
           updatedAt: new Date().toISOString(),
           lastCompletedAt: new Date().toISOString()
         }),
