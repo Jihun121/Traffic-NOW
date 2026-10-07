@@ -1754,3 +1754,108 @@ html[data-theme="light"] .detail-region-badge {
     align-items: flex-start;
   }
 }
+
+
+/* Top-level dashboard tabs */
+.dashboard-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.dashboard-tab {
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: transparent;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.dashboard-tab:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-heading);
+}
+
+.dashboard-tab.active {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.26);
+  color: var(--text-heading);
+}
+
+.dashboard-tab-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.dashboard-tab-sub {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.dashboard-tab.active .dashboard-tab-sub {
+  color: var(--text-muted);
+}
+
+.dashboard-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 22px;
+  padding: 7px 11px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.dashboard-context strong {
+  color: var(--text-heading);
+  font-size: 11px;
+}
+
+.dashboard-tab-panel {
+  display: none;
+}
+
+.dashboard-tab-panel.active {
+  display: block;
+}
+
+.dashboard-tab-panel > .section-container:last-child {
+  margin-bottom: 18px;
+}
+
+html[data-theme="light"] .dashboard-tabs {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+@media (max-width: 720px) {
+  .dashboard-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-tab {
+    padding: 9px 10px;
+  }
+
+  .dashboard-context {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+}
