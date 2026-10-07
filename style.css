@@ -303,7 +303,7 @@ h1 {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  transition: transform 0.2s, border-color 0.2s;
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
   position: relative;
   overflow: hidden;
 }
@@ -311,6 +311,27 @@ h1 {
 .top10-item:hover {
   transform: translateY(-2px);
   border-color: #475569;
+}
+
+.top10-item.top10-clickable {
+  cursor: pointer;
+}
+
+.top10-item.top10-clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+
+.top10-item.top10-clickable:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.top10-map-hint {
+  margin-top: 10px;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  opacity: 0.9;
 }
 
 .top10-item.rank-1 {
