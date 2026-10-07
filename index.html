@@ -47,17 +47,33 @@
       </div>
     </header>
     <nav class="quick-nav" aria-label="빠른 이동">
-      <a href="#overview">전체 통계</a>
-      <a href="#briefing">브리핑</a>
-      <a href="#commute">출퇴근</a>
-      <a href="#history">타임머신</a>
-      <a href="#sudden">급격한 정체</a>
+      <a href="#overview">핵심 통계</a>
       <a href="#top10">정체 TOP 10</a>
       <a href="#map">실시간 지도</a>
+      <a href="#sudden">급격한 정체</a>
+      <a href="#briefing">교통 브리핑</a>
+      <a href="#commute">출퇴근</a>
+      <a href="#history">타임머신</a>
       <a href="#detail">상세 조회</a>
     </nav>
 
     <!-- 2. 부산 전체 통계 요약 카드 (두번째 이미지: 부산 전체 통계) -->
+
+    <!-- 3. 오늘 부산 교통 브리핑 -->
+
+    <!-- 3. 출퇴근 시간 비교 -->
+
+    <!-- 3. 교통 타임머신 / 시계열 분석 -->
+
+    <!-- 3. 평소보다 갑자기 느려진 도로 -->
+
+    <!-- 3. 실시간 정체 TOP 10 랭킹 (두번째 이미지: 정체 TOP 10) -->
+
+    <!-- 4. 실시간 교통 지도 -->
+
+    <!-- 4. 도로별 상세 조회 및 필터 테이블 -->
+
+
     <section id="overview" class="section-container">
       <div class="section-title-wrap">
         <h2 id="overview-title">📊 부산 전체 교통 통계</h2>
@@ -114,7 +130,63 @@
       </div>
     </section>
 
-    <!-- 3. 오늘 부산 교통 브리핑 -->
+    <section id="top10" class="section-container">
+      <div class="section-title-wrap">
+        <div>
+          <h2 id="top10-title">🚨 실시간 정체 TOP 10</h2>
+          <p class="section-desc">현재 부산에서 속도가 가장 느리고 정체가 심각한 상위 10개 도로 구간입니다.</p>
+        </div>
+        <span class="top10-badge">LIVE RANKING</span>
+      </div>
+
+      <div class="top10-grid" id="top10Container">
+        <!-- JS로 10개 카드 동적 렌더링 -->
+        <div class="loading-placeholder">정체 TOP 10 데이터를 분석하고 있습니다...</div>
+      </div>
+    </section>
+
+    <section id="map" class="section-container">
+      <div class="section-title-wrap">
+        <div>
+          <h2 id="map-title">🗺️ 실시간 교통 지도</h2>
+          <p class="section-desc">수집 중인 최신 교통 데이터를 도로 상태별로 지도에 표시합니다. 전체 수집 사이클이 진행되는 동안에도 갱신된 구간부터 반영됩니다.</p>
+        </div>
+        <span class="top10-badge map-badge">LIVE MAP</span>
+      </div>
+
+      <div class="card map-panel">
+        <div id="trafficMap" class="traffic-map" aria-label="부산 실시간 교통 지도"></div>
+        <div class="map-toolbar">
+          <div class="map-legend">
+            <span><i class="map-legend-dot smooth"></i> 원활</span>
+            <span><i class="map-legend-dot slow"></i> 서행</span>
+            <span><i class="map-legend-dot congested"></i> 정체</span>
+          </div>
+          <div class="map-actions">
+            <button type="button" id="mapAllButton" class="tab-btn active">전체</button>
+            <button type="button" id="mapCongestedButton" class="tab-btn">정체·서행</button>
+          </div>
+        </div>
+        <div id="mapMessage" class="map-message">
+          지도를 준비하고 있습니다...
+        </div>
+      </div>
+    </section>
+
+    <section id="sudden" class="section-container">
+      <div class="section-title-wrap">
+        <div>
+          <h2 id="sudden-title">⚠️ 평소보다 갑자기 느려진 도로</h2>
+          <p class="section-desc">최근 수집 이력과 비교해 속도가 크게 떨어진 도로를 감지합니다.</p>
+        </div>
+        <span class="top10-badge sudden-badge">SUDDEN DROP</span>
+      </div>
+
+      <div class="sudden-grid" id="suddenCongestionContainer">
+        <div class="loading-placeholder">급격한 정체 변화를 분석하고 있습니다...</div>
+      </div>
+    </section>
+
     <section id="briefing" class="section-container">
       <div class="section-title-wrap">
         <div>
@@ -151,7 +223,6 @@
       </div>
     </section>
 
-    <!-- 3. 출퇴근 시간 비교 -->
     <section id="commute" class="section-container">
       <div class="section-title-wrap">
         <div>
@@ -198,7 +269,6 @@
       </div>
     </section>
 
-    <!-- 3. 교통 타임머신 / 시계열 분석 -->
     <section id="history" class="section-container">
       <div class="section-title-wrap">
         <div>
@@ -252,67 +322,6 @@
       </div>
     </section>
 
-    <!-- 3. 평소보다 갑자기 느려진 도로 -->
-    <section id="sudden" class="section-container">
-      <div class="section-title-wrap">
-        <div>
-          <h2 id="sudden-title">⚠️ 평소보다 갑자기 느려진 도로</h2>
-          <p class="section-desc">최근 수집 이력과 비교해 속도가 크게 떨어진 도로를 감지합니다.</p>
-        </div>
-        <span class="top10-badge sudden-badge">SUDDEN DROP</span>
-      </div>
-
-      <div class="sudden-grid" id="suddenCongestionContainer">
-        <div class="loading-placeholder">급격한 정체 변화를 분석하고 있습니다...</div>
-      </div>
-    </section>
-
-    <!-- 3. 실시간 정체 TOP 10 랭킹 (두번째 이미지: 정체 TOP 10) -->
-    <section id="top10" class="section-container">
-      <div class="section-title-wrap">
-        <div>
-          <h2 id="top10-title">🚨 실시간 정체 TOP 10</h2>
-          <p class="section-desc">현재 부산에서 속도가 가장 느리고 정체가 심각한 상위 10개 도로 구간입니다.</p>
-        </div>
-        <span class="top10-badge">LIVE RANKING</span>
-      </div>
-
-      <div class="top10-grid" id="top10Container">
-        <!-- JS로 10개 카드 동적 렌더링 -->
-        <div class="loading-placeholder">정체 TOP 10 데이터를 분석하고 있습니다...</div>
-      </div>
-    </section>
-
-    <!-- 4. 실시간 교통 지도 -->
-    <section id="map" class="section-container">
-      <div class="section-title-wrap">
-        <div>
-          <h2 id="map-title">🗺️ 실시간 교통 지도</h2>
-          <p class="section-desc">수집 중인 최신 교통 데이터를 도로 상태별로 지도에 표시합니다. 전체 수집 사이클이 진행되는 동안에도 갱신된 구간부터 반영됩니다.</p>
-        </div>
-        <span class="top10-badge map-badge">LIVE MAP</span>
-      </div>
-
-      <div class="card map-panel">
-        <div id="trafficMap" class="traffic-map" aria-label="부산 실시간 교통 지도"></div>
-        <div class="map-toolbar">
-          <div class="map-legend">
-            <span><i class="map-legend-dot smooth"></i> 원활</span>
-            <span><i class="map-legend-dot slow"></i> 서행</span>
-            <span><i class="map-legend-dot congested"></i> 정체</span>
-          </div>
-          <div class="map-actions">
-            <button type="button" id="mapAllButton" class="tab-btn active">전체</button>
-            <button type="button" id="mapCongestedButton" class="tab-btn">정체·서행</button>
-          </div>
-        </div>
-        <div id="mapMessage" class="map-message">
-          지도를 준비하고 있습니다...
-        </div>
-      </div>
-    </section>
-
-    <!-- 4. 도로별 상세 조회 및 필터 테이블 -->
     <section id="detail" class="section-container panel">
       <div class="panel-header">
         <div>
