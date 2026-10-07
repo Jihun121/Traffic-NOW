@@ -149,13 +149,39 @@
       <div class="section-title-wrap">
         <div>
           <h2 id="map-title">🗺️ 실시간 교통 지도</h2>
-          <p class="section-desc">수집 중인 최신 교통 데이터를 도로 상태별로 지도에 표시합니다. 전체 수집 사이클이 진행되는 동안에도 갱신된 구간부터 반영됩니다.</p>
+          <p class="section-desc">선택한 권역의 최신 교통 흐름을 지도와 아래 상세 목록에서 함께 확인합니다.</p>
         </div>
         <span class="top10-badge map-badge">LIVE MAP</span>
       </div>
 
       <div class="card map-panel">
+        <div class="region-selector">
+          <div class="region-selector-head">
+            <div>
+              <strong>조회 권역</strong>
+              <span>지역을 선택하면 지도와 도로별 상세 정보가 함께 변경됩니다.</span>
+            </div>
+            <span id="selectedRegionLabel" class="selected-region-label">부산 전체</span>
+          </div>
+          <div class="region-tabs" id="regionTabs" aria-label="교통 조회 권역">
+            <button type="button" class="tab-btn region-btn active" data-region="busan">부산 전체</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-expressway">도시고속·대교</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-north-gu">북구</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-haeundae">해운대·수영</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-jin">부산진·서면</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-dongrae-yeonje">동래·연제</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-nam">남구</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-donggu">동구</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-saha-gangseo">사하·강서</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-sasang">사상</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-geumjeong">금정</button>
+            <button type="button" class="tab-btn region-btn" data-region="busan-jung-seo-yeongdo">중구·서구·영도</button>
+          </div>
+          <div class="region-scope-note">※ 전체 통계와 정체 TOP 10은 부산 전체 기준이며, 선택 권역은 지도와 도로 상세 조회에 적용됩니다.</div>
+        </div>
+
         <div id="trafficMap" class="traffic-map" aria-label="부산 실시간 교통 지도"></div>
+
         <div class="map-toolbar">
           <div class="map-legend">
             <span><i class="map-legend-dot smooth"></i> 원활</span>
@@ -170,6 +196,52 @@
         <div id="mapMessage" class="map-message">
           지도를 준비하고 있습니다...
         </div>
+      </div>
+    </section>
+
+    <section id="detail" class="section-container panel">
+      <div class="panel-header">
+        <div>
+          <div class="detail-title-line">
+            <div>
+              <h2 id="detail-title">🛣️ 도로별 상세 소통 정보</h2>
+              <p class="section-desc">지도와 동일한 권역의 실시간 도로 상태를 확인하세요.</p>
+            </div>
+            <span id="detailRegionBadge" class="detail-region-badge">부산 전체</span>
+          </div>
+        </div>
+        <div class="panel-search-wrap">
+          <input type="text" id="searchInput" placeholder="도로명 또는 구간 검색 (예: 중앙대로, 만덕)..." autocomplete="off">
+        </div>
+      </div>
+
+      <div class="toolbar detail-toolbar">
+        <span class="detail-filter-caption">선택 권역과 연동</span>
+        <div class="filter-toggles">
+          <label class="toggle-checkbox">
+            <input type="checkbox" id="onlyCongestedCheck">
+            <span>정체·서행만 보기</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="statusMessage" class="message">실시간 데이터를 로드하는 중입니다...</div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 88px;">상태</th>
+              <th style="width: 30%;">도로명 / 유형</th>
+              <th>구간 (시점 → 종점)</th>
+              <th style="width: 120px;">현재 속도</th>
+            </tr>
+          </thead>
+          <tbody id="trafficTable"></tbody>
+        </table>
+      </div>
+      <div class="table-footer">
+        <span id="resultCountLabel">조회 결과: 0건</span>
       </div>
     </section>
 
@@ -322,53 +394,7 @@
       </div>
     </section>
 
-    <section id="detail" class="section-container panel">
-      <div class="panel-header">
-        <div>
-          <h2 id="detail-title">🛣️ 도로별 상세 소통 정보</h2>
-          <p class="section-desc">권역별 또는 도로 유형별로 실시간 속도와 상태를 확인하세요.</p>
-        </div>
-        <div class="panel-search-wrap">
-          <input type="text" id="searchInput" placeholder="도로명 또는 구간 검색 (예: 중앙대로, 만덕)..." autocomplete="off">
-        </div>
-      </div>
 
-      <!-- 권역 및 필터 툴바 -->
-      <div class="toolbar">
-        <div class="region-tabs" id="regionTabs">
-          <button type="button" class="tab-btn active" data-region="busan">부산 전체</button>
-          <button type="button" class="tab-btn" data-region="busan-expressway">도시고속·대교</button>
-          <button type="button" class="tab-btn" data-region="busan-north-gu">북구</button>
-          <button type="button" class="tab-btn" data-region="busan-haeundae">해운대·수영</button>
-          <button type="button" class="tab-btn" data-region="busan-jin">부산진·서면</button>
-        </div>
-        <div class="filter-toggles">
-          <label class="toggle-checkbox">
-            <input type="checkbox" id="onlyCongestedCheck">
-            <span>정체·서행만 보기</span>
-          </label>
-        </div>
-      </div>
-
-      <div id="statusMessage" class="message">실시간 데이터를 로드하는 중입니다...</div>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 88px;">상태</th>
-              <th style="width: 30%;">도로명 / 유형</th>
-              <th>구간 (시점 → 종점)</th>
-              <th style="width: 120px;">현재 속도</th>
-            </tr>
-          </thead>
-          <tbody id="trafficTable"></tbody>
-        </table>
-      </div>
-      <div class="table-footer">
-        <span id="resultCountLabel">조회 결과: 0건</span>
-      </div>
-    </section>
 
     <!-- 기준 설명 및 푸터 -->
     <footer class="app-footer">
