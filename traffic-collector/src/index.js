@@ -960,6 +960,7 @@ export default {
       const sourceParts = ["부산광역시 링크소통정보"];
       const warnings = [];
       const rows = accumulator.filter((row) => seenKeys.has(getTrafficRowKey(row)));
+      const busanRowsForHistory = rows.slice();
 
       // 2. ITS 데이터 수집 (보조/광역)
       if (itsApiKey) {
@@ -1073,7 +1074,7 @@ export default {
       // 완성된 부산 전체 사이클을 시계열 이력으로 보관한다.
       // 이력 저장 실패가 최신 스냅샷 제공을 막지 않도록 별도로 처리한다.
       try {
-        const historyResult = await archiveHistoricalSnapshot(env, snapshot, accumulator);
+        const historyResult = await archiveHistoricalSnapshot(env, snapshot, busanRowsForHistory);
         console.log({
           event: "collector-history-write-success",
           historyKey: historyResult.historyKey,
