@@ -883,6 +883,13 @@ async function focusTrafficMapRow(top10Item) {
   if (mapAllButton) mapAllButton.classList.add("active");
   if (mapCongestedButton) mapCongestedButton.classList.remove("active");
 
+  // 탭 전환 직후 기존 스크롤 위치가 유지되면서 상세 테이블 쪽이 보이는 것을 막는다.
+  // 지도 영역을 먼저 화면 상단으로 가져온 뒤 실제 도로 위치를 찾는다.
+  const mapSection = document.querySelector("#map");
+  if (mapSection) {
+    mapSection.scrollIntoView({ behavior: "auto", block: "start" });
+  }
+
   // TOP 10은 부산 전체 기준이므로 특정 권역을 보고 있었다면 부산 전체 지도로 전환한다.
   if (state.regionKey !== "busan") {
     const loaded = await loadTraffic("busan", false);
@@ -944,6 +951,12 @@ async function focusTrafficMapRow(top10Item) {
   };
 
   openTrafficMapPopup(mapRow, point);
+
+  // 지도 중심/팝업이 준비된 뒤 한 번 더 지도 영역을 화면에 고정한다.
+  // 데이터 로딩이나 탭 재렌더링으로 스크롤이 다시 밀리는 경우까지 방지한다.
+  if (mapSection) {
+    mapSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function renderTrafficMap(rows) {
