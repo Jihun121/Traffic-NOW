@@ -89,36 +89,48 @@
         <span class="update-label" id="updatedAtLabel">기준: 확인 중</span>
       </div>
 
-      <div class="summary-grid">
-        <article class="card stat-card">
-          <span class="card-label">부산 도로 평균속도</span>
-          <strong class="card-value" id="statAvgSpeed">-</strong>
-          <span class="card-sub" id="statAvgSub">전체 모니터링 링크 집계</span>
+      <div class="overview-dashboard">
+        <article class="card overview-status-card traffic-index-card">
+          <div class="overview-status-head">
+            <div>
+              <span class="card-label">부산 교통지수</span>
+              <div class="overview-index-line">
+                <strong class="overview-index-value" id="statTrafficIndex">-</strong>
+                <span class="overview-index-scale">/ 100</span>
+              </div>
+              <span class="card-sub" id="statTrafficIndexGrade">지수 산출 중</span>
+            </div>
+            <div class="overview-live-state">
+              <span class="overview-state-label">실시간 종합 상태</span>
+              <strong id="statCongestionLevel">-</strong>
+            </div>
+          </div>
+          <div class="overview-status-detail">
+            <span id="statLevelDetail">혼잡도 지수 산출 중</span>
+            <span class="overview-pulse" aria-hidden="true"></span>
+            <span>부산 전체 기준</span>
+          </div>
         </article>
 
-        <article class="card stat-card traffic-index-card">
-          <span class="card-label">부산 교통지수</span>
-          <strong class="card-value" id="statTrafficIndex">-</strong>
-          <span class="card-sub" id="statTrafficIndexGrade">0~100 · 지수 산출 중</span>
-        </article>
+        <div class="overview-metrics-grid">
+          <article class="card stat-card overview-metric-card">
+            <span class="card-label">부산 도로 평균속도</span>
+            <strong class="card-value" id="statAvgSpeed">-</strong>
+            <span class="card-sub" id="statAvgSub">전체 모니터링 링크 집계</span>
+          </article>
 
-        <article class="card stat-card">
-          <span class="card-label">모니터링 도로 구간</span>
-          <strong class="card-value" id="statTotalLinks">-</strong>
-          <span class="card-sub">부산 시내 + 도시고속 링크</span>
-        </article>
+          <article class="card stat-card overview-metric-card">
+            <span class="card-label">모니터링 도로 구간</span>
+            <strong class="card-value" id="statTotalLinks">-</strong>
+            <span class="card-sub">부산 시내 + 도시고속 링크</span>
+          </article>
 
-        <article class="card stat-card">
-          <span class="card-label">실시간 종합 상태</span>
-          <strong class="card-value" id="statCongestionLevel">-</strong>
-          <span class="card-sub" id="statLevelDetail">혼잡도 지수 산출 중</span>
-        </article>
-
-        <article class="card stat-card">
-          <span class="card-label">최대 정체 병목 도로</span>
-          <strong class="card-value card-value-sm" id="statSlowestRoad">-</strong>
-          <span class="card-sub" id="statSlowestSpeed">-</span>
-        </article>
+          <article class="card stat-card overview-metric-card bottleneck-card">
+            <span class="card-label">최대 정체 병목 도로</span>
+            <strong class="card-value card-value-sm" id="statSlowestRoad">-</strong>
+            <span class="card-sub" id="statSlowestSpeed">-</span>
+          </article>
+        </div>
       </div>
 
       <!-- 원활 / 서행 / 정체 3단계 비율 게이지 바 -->
