@@ -67,6 +67,8 @@ export async function onRequestGet(context) {
     return json({
       ok: true,
       source: snapshot.source || "부산광역시 링크소통정보",
+      snapshotType: snapshot.snapshotType || "COMPLETE",
+      collection: snapshot.collection || null,
       region: regionKey,
       fetchedAt: snapshot.fetchedAt || null,
       totalRows: filteredRows.length,
