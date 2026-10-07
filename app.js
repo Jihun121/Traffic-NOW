@@ -1316,8 +1316,14 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
 
     const cacheLabel = payload.cache === "SNAPSHOT" ? "백그라운드 스냅샷" : "스냅샷";
     const duration = payload.timing?.totalMs ? ` (${payload.timing.totalMs}ms)` : "";
-    statusMessage.textContent = `${payload.source || "부산시+ITS"} 기반 실시간 분석 완료 · ${cacheLabel}${duration}`;
-    setStatus("실시간 동기화 완료", true);
+    const isIncremental = payload.snapshotType === "INCREMENTAL";
+    const collection = payload.collection || {};
+    const progressLabel = isIncremental
+      ? `부분 최신화 · ${Number(collection.completedPages || 0).toLocaleString("ko-KR")}/${Number(collection.totalPages || 0).toLocaleString("ko-KR")}페이지 · 이번 배치 ${Number(collection.refreshedRows || 0).toLocaleString("ko-KR")}개 갱신`
+      : "전체 수집 사이클 완료";
+    statusMessage.textContent =
+      `${payload.source || "부산시+ITS"} 기반 ${progressLabel} · ${cacheLabel}${duration}`;
+    setStatus(isIncremental ? "부분 최신화 완료" : "실시간 동기화 완료", true);
     if (errorDetail) errorDetail.textContent = "";
   } catch (error) {
     setStatus("연결 실패", false);
@@ -1358,7 +1364,7 @@ if (mapCongestedButton) {
 
 window.addEventListener("resize", function() {
   if (state.map) {
-    state.map.invalidateSize();
+    renderTrafficMap(rowsForMapRender);
   }
 });
 
