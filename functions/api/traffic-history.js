@@ -60,13 +60,13 @@ function summarizeHistoryEntry(entry) {
     totalCount: Number(entry?.totalCount || 0),
     reportedTotalCount: Number(entry?.reportedTotalCount || 0),
     totalPages: Number(entry?.totalPages || 0),
-    averageSpeed: Number(entry?.stats?.averageSpeed || 0),
-    trafficIndex: Number(entry?.stats?.trafficIndex || 0),
-    congestedRatio: Number(entry?.stats?.statusRatios?.congested || 0),
-    slowRatio: Number(entry?.stats?.statusRatios?.slow || 0),
-    smoothRatio: Number(entry?.stats?.statusRatios?.smooth || 0),
-    congestionLevel: entry?.stats?.congestionLevel || "데이터 없음",
-    suddenCongestionCount: Number(entry?.suddenCongestion?.detectedCount || 0)
+    averageSpeed: Number(entry?.averageSpeed || 0),
+    trafficIndex: Number(entry?.trafficIndex || 0),
+    congestedRatio: Number(entry?.congestedRatio || 0),
+    slowRatio: Number(entry?.slowRatio || 0),
+    smoothRatio: Number(entry?.smoothRatio || 0),
+    congestionLevel: entry?.congestionLevel || "데이터 없음",
+    suddenCongestionCount: Number(entry?.suddenCongestionCount || 0)
   };
 }
 
