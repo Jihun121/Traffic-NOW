@@ -1344,13 +1344,17 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
       ? `부분 최신화 · ${Number(collection.completedPages || 0).toLocaleString("ko-KR")}/${Number(collection.totalPages || 0).toLocaleString("ko-KR")}페이지 · 이번 배치 ${Number(collection.refreshedRows || 0).toLocaleString("ko-KR")}개 갱신`
       : "전체 수집 사이클 완료";
 
+    const freshnessTime = formatApiDate(payload.updatedAt);
+    const autoCheckedLabel = snapshotChanged
+      ? cacheLabel + duration
+      : `자동 갱신 확인 · ${freshnessTime} 기준 유지`;
+
+    statusMessage.textContent =
+      `${payload.source || "부산시+ITS"} 기반 ${progressLabel} · ${autoCheckedLabel}`;
+
     if (snapshotChanged) {
-      statusMessage.textContent =
-        `${payload.source || "부산시+ITS"} 기반 ${progressLabel} · ${cacheLabel}${duration}`;
       setStatus(isIncremental ? "부분 최신화 완료" : "실시간 동기화 완료", true);
     } else {
-      statusMessage.textContent =
-        `최신 스냅샷 확인 완료 · ${formatApiDate(payload.updatedAt)} 기준 데이터 유지 · 자동 갱신 대기 중`;
       setStatus("최신 데이터 확인", true);
     }
 
@@ -1390,7 +1394,7 @@ function startAutoRefresh() {
   }, AUTO_REFRESH_INTERVAL_MS);
 
   if (autoRefreshLabel) {
-    autoRefreshLabel.textContent = "자동 갱신: 60초마다";
+    autoRefreshLabel.textContent = "자동 갱신: 60초마다 · 수집기: 10분마다";
   }
 }
 
