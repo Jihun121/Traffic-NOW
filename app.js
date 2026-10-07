@@ -649,7 +649,6 @@ function ensureTrafficMap() {
       state.map.dragStartY = event.clientY;
       state.map.didDrag = false;
       state.map.centerManuallySet = true;
-      canvas.setPointerCapture(event.pointerId);
       canvas.classList.add("is-dragging");
     });
 
@@ -675,15 +674,29 @@ function ensureTrafficMap() {
       renderTrafficMap(rowsForMapRender);
     });
 
-    canvas.addEventListener("pointerup", function(event) {
+    canvas.addEventListener("pointerup", function() {
       state.map.dragging = false;
-      try { canvas.releasePointerCapture(event.pointerId); } catch {}
       canvas.classList.remove("is-dragging");
     });
 
     canvas.addEventListener("pointercancel", function() {
       state.map.dragging = false;
+      state.map.didDrag = false;
       canvas.classList.remove("is-dragging");
+    });
+
+    // 포인터가 지도 밖에서 놓여도 드래그 상태가 남지 않도록 정리한다.
+    window.addEventListener("pointerup", function() {
+      if (!state.map) return;
+      state.map.dragging = false;
+      if (state.map.canvas) state.map.canvas.classList.remove("is-dragging");
+    });
+
+    window.addEventListener("blur", function() {
+      if (!state.map) return;
+      state.map.dragging = false;
+      state.map.didDrag = false;
+      if (state.map.canvas) state.map.canvas.classList.remove("is-dragging");
     });
 
     canvas.addEventListener("click", function(event) {
