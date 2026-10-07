@@ -18,14 +18,22 @@ const state = {
   mapTotalRows: 0,
   mapGeometry: null,
   mapGeometryMeta: null,
-  mapGeometryPromise: null
+  mapGeometryPromise: null,
+  snapshotFetchedAt: "",
+  snapshotRegionKey: "",
+  snapshotType: "",
+  autoRefreshTimer: null,
+  lastAutoRefreshAt: 0
 };
+
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 
 // DOM 요소 캐싱
 const statusDot = document.querySelector("#statusDot");
 const statusText = document.querySelector("#statusText");
 const refreshButton = document.querySelector("#refreshButton");
 const updatedAtLabel = document.querySelector("#updatedAtLabel");
+const autoRefreshLabel = document.querySelector("#autoRefreshLabel");
 
 const statAvgSpeed = document.querySelector("#statAvgSpeed");
 const statTrafficIndex = document.querySelector("#statTrafficIndex");
@@ -1253,7 +1261,7 @@ function diagnoseTrafficError(response, payload, rawText = "") {
 
 // 5. API 호출 및 데이터 로드
 async function loadTraffic(regionKey = "busan", forceRefresh = false) {
-  if (state.loading) return;
+  if (state.loading) return false;
 
   state.loading = true;
   state.regionKey = regionKey;
@@ -1302,17 +1310,31 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
       throw new Error(errorDiag.message);
     }
 
-    state.rawData = Array.isArray(payload.data) ? payload.data : [];
-    state.stats = payload.stats || null;
-    state.top10 = Array.isArray(payload.top10) ? payload.top10 : [];
-    state.suddenCongestion = payload.suddenCongestion || null;
+    const previousFetchedAt = state.snapshotFetchedAt;
+    const previousRegionKey = state.snapshotRegionKey;
+    const previousSnapshotType = state.snapshotType;
+    const snapshotChanged =
+      previousFetchedAt !== payload.updatedAt ||
+      previousRegionKey !== regionKey ||
+      forceRefresh;
 
-    renderStats(state.stats, payload.updatedAt);
-    renderTop10(state.top10);
-    renderSuddenCongestion(state.suddenCongestion);
-    renderTrafficBriefing(payload.trafficBriefing || null);
-    loadTrafficMap(state.regionKey);
-    renderTable();
+    state.snapshotFetchedAt = payload.updatedAt || "";
+    state.snapshotRegionKey = regionKey;
+    state.snapshotType = payload.snapshotType || "COMPLETE";
+
+    if (snapshotChanged || state.rawData.length === 0) {
+      state.rawData = Array.isArray(payload.data) ? payload.data : [];
+      state.stats = payload.stats || null;
+      state.top10 = Array.isArray(payload.top10) ? payload.top10 : [];
+      state.suddenCongestion = payload.suddenCongestion || null;
+
+      renderStats(state.stats, payload.updatedAt);
+      renderTop10(state.top10);
+      renderSuddenCongestion(state.suddenCongestion);
+      renderTrafficBriefing(payload.trafficBriefing || null);
+      loadTrafficMap(state.regionKey);
+      renderTable();
+    }
 
     const cacheLabel = payload.cache === "SNAPSHOT" ? "백그라운드 스냅샷" : "스냅샷";
     const duration = payload.timing?.totalMs ? ` (${payload.timing.totalMs}ms)` : "";
@@ -1321,17 +1343,67 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     const progressLabel = isIncremental
       ? `부분 최신화 · ${Number(collection.completedPages || 0).toLocaleString("ko-KR")}/${Number(collection.totalPages || 0).toLocaleString("ko-KR")}페이지 · 이번 배치 ${Number(collection.refreshedRows || 0).toLocaleString("ko-KR")}개 갱신`
       : "전체 수집 사이클 완료";
-    statusMessage.textContent =
-      `${payload.source || "부산시+ITS"} 기반 ${progressLabel} · ${cacheLabel}${duration}`;
-    setStatus(isIncremental ? "부분 최신화 완료" : "실시간 동기화 완료", true);
+
+    if (snapshotChanged) {
+      statusMessage.textContent =
+        `${payload.source || "부산시+ITS"} 기반 ${progressLabel} · ${cacheLabel}${duration}`;
+      setStatus(isIncremental ? "부분 최신화 완료" : "실시간 동기화 완료", true);
+    } else {
+      statusMessage.textContent =
+        `최신 스냅샷 확인 완료 · ${formatApiDate(payload.updatedAt)} 기준 데이터 유지 · 자동 갱신 대기 중`;
+      setStatus("최신 데이터 확인", true);
+    }
+
+    // 약 5시간 주기의 완성 사이클이 새로 끝났을 때만
+    // 비용이 큰 History/출퇴근 비교도 함께 갱신한다.
+    const becameComplete =
+      previousSnapshotType === "INCREMENTAL" &&
+      payload.snapshotType === "COMPLETE";
+
+    if (becameComplete) {
+      loadTrafficHistory();
+      loadCommuteComparison();
+    }
+
     if (errorDetail) errorDetail.textContent = "";
+
+    return true;
   } catch (error) {
     setStatus("연결 실패", false);
+    return false;
   } finally {
     clearTimeout(timer);
     state.loading = false;
   }
 }
+
+function startAutoRefresh() {
+  if (state.autoRefreshTimer) {
+    clearInterval(state.autoRefreshTimer);
+  }
+
+  state.autoRefreshTimer = window.setInterval(function() {
+    if (document.hidden || state.loading) return;
+
+    state.lastAutoRefreshAt = Date.now();
+    loadTraffic(state.regionKey || "busan", false);
+  }, AUTO_REFRESH_INTERVAL_MS);
+
+  if (autoRefreshLabel) {
+    autoRefreshLabel.textContent = "자동 갱신: 60초마다";
+  }
+}
+
+document.addEventListener("visibilitychange", function() {
+  if (document.hidden || state.loading) return;
+
+  // 탭을 다시 열었을 때 기다리지 않고 즉시 최신 스냅샷을 확인한다.
+  const elapsed = Date.now() - Number(state.lastAutoRefreshAt || 0);
+  if (elapsed >= 30000) {
+    state.lastAutoRefreshAt = Date.now();
+    loadTraffic(state.regionKey || "busan", false);
+  }
+});
 
 function displayError(diag) {
   statusMessage.textContent = `${diag.title}: ${diag.message}`;
@@ -1414,3 +1486,4 @@ if (onlyCongestedCheck) {
 loadTraffic("busan");
 loadTrafficHistory();
 loadCommuteComparison();
+startAutoRefresh();
