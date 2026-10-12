@@ -728,8 +728,7 @@ export default {
       // v2 상태는 한 번 새 사이클을 시작하면서 v3의 경량 상태로 전환한다.
       const incrementalCollectorEnabled = Number(state?.collectorVersion || 0) === 3;
       const cycleInProgress = incrementalCollectorEnabled && state?.inProgress === true;
-      const previousSnapshot =
-        (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
+      let previousSnapshot = null;
 
       // Briefing 단계에는 latest의 대형 rows 배열이 필요하지 않으므로 작은 분석 키만 사용한다.
       if (incrementalCollectorEnabled && state?.phase === "briefing-pending") {
@@ -786,7 +785,7 @@ export default {
         return;
       }
 
-      const previousSnapshot =
+      previousSnapshot =
         (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
 
       // 새 스냅샷의 교통 분석은 별도 Cron 단계로 분리한다.
