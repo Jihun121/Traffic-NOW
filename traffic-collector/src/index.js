@@ -549,27 +549,110 @@ function buildTrafficBriefing(stats, previousEntry, suddenCongestion, top10) {
   };
 }
 
+function buildHistoryRowsAndStats(busanRows) {
+  const historyRows = [];
+  let totalCount = 0;
+  let totalSpeed = 0;
+  let smoothCount = 0;
+  let slowCount = 0;
+  let congestedCount = 0;
+  let slowestRow = null;
+  let slowestSpeed = Infinity;
+
+  // Compact history row 생성과 통계 산출을 한 번의 순회에서 처리한다.
+  for (const row of busanRows) {
+    const historyRow = {
+      linkId: row.linkId || "",
+      roadName: row.roadName || "",
+      startName: row.startName || "",
+      endName: row.endName || "",
+      speed: Number(row.speed),
+      status: row.status || "UNKNOWN",
+      category: row.category || "",
+      latitude: Number.isFinite(Number(row.latitude)) ? Number(row.latitude) : null,
+      longitude: Number.isFinite(Number(row.longitude)) ? Number(row.longitude) : null,
+      startLatitude: Number.isFinite(Number(row.startLatitude)) ? Number(row.startLatitude) : null,
+      startLongitude: Number.isFinite(Number(row.startLongitude)) ? Number(row.startLongitude) : null,
+      endLatitude: Number.isFinite(Number(row.endLatitude)) ? Number(row.endLatitude) : null,
+      endLongitude: Number.isFinite(Number(row.endLongitude)) ? Number(row.endLongitude) : null
+    };
+    historyRows.push(historyRow);
+
+    const speed = Number(historyRow.speed);
+    if (!Number.isFinite(speed) || speed < 0) continue;
+
+    totalCount += 1;
+    totalSpeed += speed;
+    const category = historyRow.category || getRoadCategory(historyRow.roadName);
+    const evaluation = evaluateTrafficStatus(speed, category);
+    if (evaluation.status === "SMOOTH") smoothCount += 1;
+    else if (evaluation.status === "SLOW") slowCount += 1;
+    else if (evaluation.status === "CONGESTED") congestedCount += 1;
+
+    if (speed < slowestSpeed) {
+      slowestSpeed = speed;
+      slowestRow = historyRow;
+    }
+  }
+
+  if (totalCount === 0) {
+    return {
+      historyRows,
+      stats: {
+        totalCount: 0,
+        averageSpeed: 0,
+        trafficIndex: 0,
+        trafficIndexGrade: "데이터 없음",
+        statusCounts: { smooth: 0, slow: 0, congested: 0 },
+        statusRatios: { smooth: 0, slow: 0, congested: 0 },
+        congestionLevel: "데이터 없음",
+        slowestRoad: null
+      }
+    };
+  }
+
+  const averageSpeed = Number((totalSpeed / totalCount).toFixed(1));
+  const smoothRatio = Number(((smoothCount / totalCount) * 100).toFixed(1));
+  const slowRatio = Number(((slowCount / totalCount) * 100).toFixed(1));
+  const congestedRatio = Number(((congestedCount / totalCount) * 100).toFixed(1));
+  const trafficIndex = Number(Math.max(0, Math.min(100, smoothRatio + slowRatio * 0.5)).toFixed(1));
+
+  let trafficIndexGrade = "매우 혼잡";
+  if (trafficIndex >= 80) trafficIndexGrade = "매우 원활";
+  else if (trafficIndex >= 65) trafficIndexGrade = "원활";
+  else if (trafficIndex >= 50) trafficIndexGrade = "보통";
+  else if (trafficIndex >= 35) trafficIndexGrade = "혼잡";
+
+  let congestionLevel = "원활";
+  if (congestedRatio >= 25) congestionLevel = "매우 혼잡";
+  else if (congestedRatio >= 15) congestionLevel = "혼잡";
+  else if (congestedRatio >= 8 || slowRatio >= 30) congestionLevel = "다소 혼잡";
+
+  return {
+    historyRows,
+    stats: {
+      totalCount,
+      averageSpeed,
+      trafficIndex,
+      trafficIndexGrade,
+      statusCounts: { smooth: smoothCount, slow: slowCount, congested: congestedCount },
+      statusRatios: { smooth: smoothRatio, slow: slowRatio, congested: congestedRatio },
+      congestionLevel,
+      slowestRoad: slowestRow ? {
+        roadName: slowestRow.roadName || "무명도로",
+        section: `${slowestRow.startName || ""} → ${slowestRow.endName || ""}`.trim(),
+        speed: Number(slowestRow.speed)
+      } : null
+    }
+  };
+}
+
 async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
   const fetchedAt = snapshot.fetchedAt || new Date().toISOString();
   const cycleId = fetchedAt.replace(/[-:.TZ]/g, "");
   const historyKey = `${HISTORY_KEY_PREFIX}${cycleId}`;
-
-  // 시계열 분석에 필요한 핵심 필드만 저장해 현재 latest 스냅샷의 중복을 최소화한다.
-  const historyRows = busanRows.map((row) => ({
-    linkId: row.linkId || "",
-    roadName: row.roadName || "",
-    startName: row.startName || "",
-    endName: row.endName || "",
-    speed: Number(row.speed),
-    status: row.status || "UNKNOWN",
-    category: row.category || "",
-    latitude: Number.isFinite(Number(row.latitude)) ? Number(row.latitude) : null,
-    longitude: Number.isFinite(Number(row.longitude)) ? Number(row.longitude) : null,
-    startLatitude: Number.isFinite(Number(row.startLatitude)) ? Number(row.startLatitude) : null,
-    startLongitude: Number.isFinite(Number(row.startLongitude)) ? Number(row.startLongitude) : null,
-    endLatitude: Number.isFinite(Number(row.endLatitude)) ? Number(row.endLatitude) : null,
-    endLongitude: Number.isFinite(Number(row.endLongitude)) ? Number(row.endLongitude) : null
-  }));
+  const historicalData = buildHistoryRowsAndStats(busanRows);
+  const historyRows = historicalData.historyRows;
 
   const historyEntry = {
     version: 1,
@@ -578,7 +661,7 @@ async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
     totalCount: historyRows.length,
     reportedTotalCount: Number(snapshot.collection?.reportedTotalCount || historyRows.length),
     totalPages: Number(snapshot.collection?.totalPages || 0),
-    stats: calculateBusanStats(historyRows),
+    stats: historicalData.stats,
     suddenCongestion: snapshot.suddenCongestion || null,
     trafficBriefing: snapshot.trafficBriefing || null,
     rows: historyRows
