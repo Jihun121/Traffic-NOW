@@ -16,6 +16,8 @@ const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
 const GROUP_SUMMARY_KEY_PREFIX = "traffic:busan:rows:v4-summary:";
 const HISTORY_RETENTION_DAYS = 14;
 const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
+// Row shards outlive their history index entry so the final history items remain resolvable.
+const ROW_SHARD_RETENTION_TTL = HISTORY_RETENTION_TTL + 60 * 60 * 24;
 const HISTORY_MAX_ENTRIES = 96;
 // 10개 그룹으로 나눠 Worker가 매번 전체 9천 행을 읽거나 저장하지 않도록 한다.
 const ROW_GROUP_COUNT = 10;
@@ -24,7 +26,8 @@ const ROW_PAGES_PER_GROUP = 10;
 const BASELINE_KEY_PREFIX = "traffic:busan:baseline-by-timeband:v5:";
 const BASELINE_VERSION = 5;
 const BASELINE_SHARD_COUNT = ROW_GROUP_COUNT;
-const BASELINE_SHARDS_PER_RUN = 3;
+// Free tier의 10ms CPU 제한에 여유를 두기 위해 실행당 최대 2개 그룹만 분석한다.
+const BASELINE_SHARDS_PER_RUN = 2;
 const BASELINE_SAMPLE_SIZE = 6;
 const SUDDEN_CONGESTION_MIN_SAMPLES = 3;
 const SUDDEN_CONGESTION_MIN_DROP_KMH = 10;
@@ -1480,13 +1483,13 @@ export default {
             pages,
             summary: groupSummary
           }),
-          { expirationTtl: HISTORY_RETENTION_TTL }
+          { expirationTtl: ROW_SHARD_RETENTION_TTL }
         );
         // Separating summaries lets completion logic read only a few KB instead of parsing all rows.
         await env.TRAFFIC_CACHE.put(
           `${GROUP_SUMMARY_KEY_PREFIX}${cycleId}:${groupId}`,
           JSON.stringify({ cycleId, groupId, summary: groupSummary }),
-          { expirationTtl: HISTORY_RETENTION_TTL }
+          { expirationTtl: ROW_SHARD_RETENTION_TTL }
         );
       }
 
