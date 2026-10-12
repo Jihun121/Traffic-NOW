@@ -422,13 +422,24 @@ export async function loadTrafficSnapshot(env) {
     if (!analysis || analysis.rowCycleId !== state.activeCycleId || !analysis.stats) {
       const summaryGroupCount = Math.ceil(totalPages / ANALYSIS_PAGES_PER_GROUP);
       summaryList = await Promise.all(
-        Array.from({ length: summaryGroupCount }, async (_, groupId) =>
-          (await readCycleGroupSummary(env, String(state.activeCycleId), groupId, activePagesPerShard)) ||
-          calculateBusanTrafficOverview(rows.filter((row) => {
-            const group = Math.floor((Number(row.sourcePage || 1) - 1) / ANALYSIS_PAGES_PER_GROUP);
-            return group === groupId;
-          }))
-        )
+        Array.from({ length: summaryGroupCount }, async (_, groupId) => {
+          const stored = await readCycleGroupSummary(
+            env,
+            String(state.activeCycleId),
+            groupId,
+            activePagesPerShard
+          );
+          if (stored) return stored;
+
+          const firstPage = groupId * ANALYSIS_PAGES_PER_GROUP + 1;
+          const lastPage = Math.min(firstPage + ANALYSIS_PAGES_PER_GROUP - 1, totalPages);
+          const groupRows = [];
+          for (let page = firstPage; page <= lastPage; page += 1) {
+            const shard = activeShards[getRowShardIndex(page, activePagesPerShard)];
+            groupRows.push(...(Array.isArray(shard?.pages?.[String(page)]) ? shard.pages[String(page)] : []));
+          }
+          return calculateBusanTrafficOverview(groupRows);
+        })
       );
     }
   }
