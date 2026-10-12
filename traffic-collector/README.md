@@ -19,13 +19,14 @@
 
 - `traffic:busan:collector-state`: 페이지 수집 진행 상태
 - `traffic:busan:postprocess-state`: 수집 완료 후 단계별 후처리 커서
-- `traffic:busan:rows:v4:<cycleId>:<groupId>`: 수집한 페이지 묶음(10개 페이지 단위)
-- `traffic:busan:rows:v4-summary:<cycleId>:<groupId>`: 해당 묶음의 작은 통계/TOP 10 요약
+- `traffic:busan:rows:v5:<cycleId>:<shardId>`: 새 수집 사이클의 도로 페이지 묶음(5페이지, 최대 500행 단위)
+- `traffic:busan:rows:v5-summary:<cycleId>:<groupId>`: 10페이지 단위 통계/TOP 10 요약
+- `traffic:busan:rows:v4:<cycleId>:<groupId>` 및 `v4-summary`: 기존 완성 사이클과 HISTORY 호환용
 - `traffic:busan:latest-analysis`: 현재 활성 수집 사이클의 통계와 분석 결과
 - `traffic:busan:its:latest`: 가장 최근 완료 사이클의 보조 ITS 데이터
 - `traffic:busan:history:index` 및 `traffic:busan:history:<timestamp>`: 최근 14일의 HISTORY 인덱스와 요약. HISTORY는 행 전체를 중복 저장하지 않고 완료된 row-cycle을 참조합니다.
 
-페이지 수집 중에는 이전 COMPLETE 사이클을 활성 데이터로 유지하고, 현재 사이클에서 완료된 페이지 묶음만 겹쳐 보여줍니다. 93페이지 전체를 수집한 뒤 활성 사이클을 교체하고 후처리를 별도 Cron으로 진행합니다.
+페이지 수집 중에는 이전 COMPLETE 사이클을 활성 데이터로 유지하고, 현재 사이클에서 완료된 페이지 묶음만 겹쳐 보여줍니다. 새 사이클은 5페이지 단위의 작은 row shard와 10페이지 단위 분석 요약을 분리해 저장하여 Cron마다 파싱·직렬화하는 최대 데이터량을 줄입니다. 이전 10페이지 shard 형식은 활성 사이클과 HISTORY에서 계속 읽을 수 있습니다. 93페이지 전체를 수집한 뒤 활성 사이클을 교체하고 후처리를 별도 Cron으로 진행합니다.
 
 급격한 정체 기준은 시간대별로 나뉘며, 도로 묶음 2개씩 처리해 재시작 시 이어갈 수 있습니다. 동일한 완성 스냅샷을 재시도해도 기준 표본과 감지 결과가 중복 반영되지 않도록 결과를 체크포인트와 함께 저장합니다.
 
