@@ -14,8 +14,10 @@ const LATEST_SNAPSHOT_TTL = 60 * 60 * 24 * 14;
 const COLLECTION_TTL = 60 * 60 * 24 * 14;
 const HISTORY_INDEX_KEY = "traffic:busan:history:index";
 const HISTORY_KEY_PREFIX = "traffic:busan:history:";
-const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
-const GROUP_SUMMARY_KEY_PREFIX = "traffic:busan:rows:v4-summary:";
+const LEGACY_ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
+const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v5:";
+const LEGACY_GROUP_SUMMARY_KEY_PREFIX = "traffic:busan:rows:v4-summary:";
+const GROUP_SUMMARY_KEY_PREFIX = "traffic:busan:rows:v5-summary:";
 const HISTORY_RETENTION_DAYS = 14;
 const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
 // Row shards outlive their history index entry so the final history items remain resolvable.
@@ -24,6 +26,9 @@ const HISTORY_MAX_ENTRIES = 96;
 // 10개 그룹으로 나눠 Worker가 매번 전체 9천 행을 읽거나 저장하지 않도록 한다.
 const ROW_GROUP_COUNT = 10;
 const ROW_PAGES_PER_GROUP = 10;
+// Five-page storage shards cap each KV JSON parse/stringify at roughly 500 rows.
+const ROW_SHARD_PAGES = 5;
+const LEGACY_ROW_SHARD_PAGES = 10;
 // 시간대별 기준값도 같은 페이지 그룹 단위로 분할해 소량씩 갱신한다.
 const BASELINE_KEY_PREFIX = "traffic:busan:baseline-by-timeband:v5:";
 const BASELINE_VERSION = 5;
@@ -395,33 +400,57 @@ function getRowGroupIndex(page) {
   return Math.max(0, Math.min(ROW_GROUP_COUNT - 1, Math.floor((Number(page) - 1) / ROW_PAGES_PER_GROUP)));
 }
 
-function getCycleRowShardKey(cycleId, groupId) {
-  return `${ROW_SHARD_KEY_PREFIX}${cycleId}:${groupId}`;
+function getRowShardIndex(page, pagesPerShard = ROW_SHARD_PAGES) {
+  return Math.max(0, Math.floor((Number(page) - 1) / pagesPerShard));
 }
 
-async function readCycleRowShard(env, cycleId, groupId) {
-  const shard = await env.TRAFFIC_CACHE.get(getCycleRowShardKey(cycleId, groupId), "json");
+function getCycleRowShardKey(cycleId, shardId, pagesPerShard = ROW_SHARD_PAGES) {
+  const prefix = pagesPerShard === LEGACY_ROW_SHARD_PAGES
+    ? LEGACY_ROW_SHARD_KEY_PREFIX
+    : ROW_SHARD_KEY_PREFIX;
+  return `${prefix}${cycleId}:${shardId}`;
+}
+
+async function readCycleRowShard(env, cycleId, shardId, pagesPerShard = ROW_SHARD_PAGES) {
+  const shard = await env.TRAFFIC_CACHE.get(
+    getCycleRowShardKey(cycleId, shardId, pagesPerShard),
+    "json"
+  );
   if (!shard || shard.cycleId !== cycleId || !shard.pages || typeof shard.pages !== "object") {
-    return { cycleId, groupId, pages: {}, summary: null };
+    return { cycleId, groupId: shardId, pages: {}, summary: null };
   }
   return shard;
 }
 
-async function readCycleGroupSummary(env, cycleId, groupId) {
+async function readCycleGroupSummary(env, cycleId, groupId, pagesPerShard = ROW_SHARD_PAGES) {
+  const prefix = pagesPerShard === LEGACY_ROW_SHARD_PAGES
+    ? LEGACY_GROUP_SUMMARY_KEY_PREFIX
+    : GROUP_SUMMARY_KEY_PREFIX;
   const summary = await env.TRAFFIC_CACHE.get(
-    `${GROUP_SUMMARY_KEY_PREFIX}${cycleId}:${groupId}`,
+    `${prefix}${cycleId}:${groupId}`,
     "json"
   );
   return summary?.cycleId === cycleId ? summary.summary : null;
 }
 
-function rowsFromPageShard(shard) {
+function rowsFromPageShard(shard, startPage = 1, endPage = Infinity) {
   const pages = shard?.pages && typeof shard.pages === "object" ? shard.pages : {};
   return Object.keys(pages)
     .map(Number)
-    .filter(Number.isInteger)
+    .filter((page) => Number.isInteger(page) && page >= startPage && page <= endPage)
     .sort((a, b) => a - b)
     .flatMap((page) => Array.isArray(pages[String(page)]) ? pages[String(page)] : []);
+}
+
+async function readCycleRowsForPageRange(env, cycleId, startPage, endPage, pagesPerShard = ROW_SHARD_PAGES) {
+  const firstShard = getRowShardIndex(startPage, pagesPerShard);
+  const lastShard = getRowShardIndex(endPage, pagesPerShard);
+  const shardIds = [];
+  for (let shardId = firstShard; shardId <= lastShard; shardId += 1) shardIds.push(shardId);
+  const shards = await Promise.all(
+    shardIds.map((shardId) => readCycleRowShard(env, cycleId, shardId, pagesPerShard))
+  );
+  return shards.flatMap((shard) => rowsFromPageShard(shard, startPage, endPage));
 }
 
 function mergeSuddenCongestionAlerts(existing, incoming) {
@@ -977,6 +1006,7 @@ async function archiveHistoricalSummary(env, analysis) {
     source: "부산광역시 링크소통정보",
     rowCycleId: analysis.rowCycleId || "",
     rowsSharded: true,
+    rowShardPages: Number(analysis.rowShardPages || LEGACY_ROW_SHARD_PAGES),
     totalCount: Number(busanStats.totalCount || 0),
     reportedTotalCount: Number(analysis.reportedTotalCount || busanStats.totalCount || 0),
     totalPages: Number(analysis.totalPages || 0),
@@ -1156,10 +1186,16 @@ async function runPostprocessing(env, itsApiKey) {
     let pendingDetectedCount = Number(job.pendingDetectedCount || 0);
 
     for (const groupId of groupIds) {
-      const shard = await readCycleRowShard(env, cycleId, groupId);
+      const firstPage = groupId * ROW_PAGES_PER_GROUP + 1;
+      const lastPage = Math.min(
+        firstPage + ROW_PAGES_PER_GROUP - 1,
+        Number(analysis.totalPages || 0) || firstPage + ROW_PAGES_PER_GROUP - 1
+      );
+      const storagePages = Number(analysis.rowShardPages || LEGACY_ROW_SHARD_PAGES);
+      const groupRows = await readCycleRowsForPageRange(env, cycleId, firstPage, lastPage, storagePages);
       const result = await calculateAndUpdateSuddenCongestion(
         env,
-        rowsFromPageShard(shard),
+        groupRows,
         fetchedAt,
         timeBand,
         groupId
@@ -1356,7 +1392,15 @@ export default {
       }
 
       // 새 사이클을 시작한다. 기존 activeCycleId는 다음 전체 사이클이 검증되기 전까지 보존한다.
-      const resumingCycle = version4 && state.inProgress === true && state.currentCycleId;
+      const rowShardPages = ROW_SHARD_PAGES;
+      const activeRowShardPages = Number(
+        state.activeRowShardPages || (state.activeCycleId ? LEGACY_ROW_SHARD_PAGES : ROW_SHARD_PAGES)
+      );
+      // Restart an old in-flight cycle once; it used 10-page shards and cannot be mixed with v5.
+      const resumingCycle = version4 &&
+        state.inProgress === true &&
+        state.currentCycleId &&
+        Number(state.rowShardPages || LEGACY_ROW_SHARD_PAGES) === ROW_SHARD_PAGES;
       const cycleId = resumingCycle
         ? String(state.currentCycleId)
         : new Date().toISOString().replace(/[-:.TZ]/g, "");
@@ -1380,6 +1424,8 @@ export default {
       // 체크포인트를 먼저 저장하므로, 네트워크 호출이나 저장 중 실패해도 다음 Cron에서 같은 사이클을 재개한다.
       const initialState = {
         collectorVersion: 4,
+        rowShardPages,
+        activeRowShardPages,
         inProgress: true,
         phase: null,
         activeCycleId,
@@ -1473,46 +1519,63 @@ export default {
         failedPages = new Set([...failedPages].filter((page) => page <= totalPages));
       }
 
-      // 페이지별 데이터를 해당 그룹 shard에만 반영한다. 전체 9천 행은 이 단계에서 읽거나 쓰지 않는다.
+      // Physical row shards contain at most five pages (500 rows). Analytical summaries
+      // remain 10 pages wide and are stored separately, so each Cron rewrites less JSON.
       const pagesByGroup = new Map();
+      const pagesByStorageShard = new Map();
+      const replacedPages = new Set();
+
       for (const batchPage of batchPages) {
-        const groupId = getRowGroupIndex(batchPage.page);
-        if (!pagesByGroup.has(groupId)) pagesByGroup.set(groupId, []);
-        pagesByGroup.get(groupId).push(batchPage);
+        const analysisGroupId = getRowGroupIndex(batchPage.page);
+        if (!pagesByGroup.has(analysisGroupId)) pagesByGroup.set(analysisGroupId, []);
+        pagesByGroup.get(analysisGroupId).push(batchPage);
+
+        const storageShardId = getRowShardIndex(batchPage.page, rowShardPages);
+        if (!pagesByStorageShard.has(storageShardId)) pagesByStorageShard.set(storageShardId, []);
+        pagesByStorageShard.get(storageShardId).push(batchPage);
       }
 
       const nowIso = new Date().toISOString();
-      for (const [groupId, groupPages] of pagesByGroup) {
-        const oldShard = await readCycleRowShard(env, cycleId, groupId);
+      for (const [shardId, shardPages] of pagesByStorageShard) {
+        const oldShard = await readCycleRowShard(env, cycleId, shardId, rowShardPages);
         const oldPages = oldShard.pages || {};
         const pages = { ...oldPages };
-        const replacesExistingPage = groupPages.some((batchPage) =>
-          Array.isArray(oldPages[String(batchPage.page)])
-        );
-        for (const batchPage of groupPages) {
+        for (const batchPage of shardPages) {
+          if (Array.isArray(oldPages[String(batchPage.page)])) replacedPages.add(batchPage.page);
           pages[String(batchPage.page)] = batchPage.rows;
         }
+        await env.TRAFFIC_CACHE.put(
+          getCycleRowShardKey(cycleId, shardId, rowShardPages),
+          JSON.stringify({ version: 5, cycleId, shardId, pages }),
+          { expirationTtl: ROW_SHARD_RETENTION_TTL }
+        );
+      }
 
+      for (const [groupId, groupPages] of pagesByGroup) {
+        const oldSummary = await readCycleGroupSummary(env, cycleId, groupId, rowShardPages);
+        const replacesExistingPage = groupPages.some((batchPage) => replacedPages.has(batchPage.page));
         let groupSummary;
-        // Normal path: the fetched pages have not been stored before. Reuse the
-        // existing group's aggregate and TOP 10, analysing only the new 100-row pages.
-        // A retry may replace a page already written before a checkpoint, so that
-        // recovery path rebuilds the group from rows to avoid double-counting.
-        if (oldShard.summary?.aggregate && !replacesExistingPage) {
-          const pageAnalyses = groupPages.map((batchPage) =>
-            calculateBusanAnalysis(batchPage.rows)
-          );
-          const combined = combineGroupAnalyses([oldShard.summary, ...pageAnalyses]);
+
+        if (!replacesExistingPage) {
+          const pageAnalyses = groupPages.map((batchPage) => calculateBusanAnalysis(batchPage.rows));
+          const combined = combineGroupAnalyses(oldSummary ? [oldSummary, ...pageAnalyses] : pageAnalyses);
           const addedRows = groupPages.reduce((sum, batchPage) => sum + batchPage.rows.length, 0);
           groupSummary = {
             stats: combined.stats,
             top10: combined.top10,
             aggregate: combined.aggregate,
-            totalRows: Number(oldShard.summary.totalRows || 0) + addedRows,
+            totalRows: Number(oldSummary?.totalRows || 0) + addedRows,
             updatedAt: nowIso
           };
         } else {
-          const groupRows = rowsFromPageShard({ pages });
+          // A page may have been written before its checkpoint. Rebuild only its 10-page
+          // analytical group to replace old metrics instead of double-counting on retry.
+          const firstPage = groupId * ROW_PAGES_PER_GROUP + 1;
+          const lastPage = Math.min(
+            firstPage + ROW_PAGES_PER_GROUP - 1,
+            totalPages || firstPage + ROW_PAGES_PER_GROUP - 1
+          );
+          const groupRows = await readCycleRowsForPageRange(env, cycleId, firstPage, lastPage, rowShardPages);
           const groupAnalysis = calculateBusanAnalysis(groupRows);
           groupSummary = {
             stats: groupAnalysis.stats,
@@ -1523,18 +1586,6 @@ export default {
           };
         }
 
-        await env.TRAFFIC_CACHE.put(
-          getCycleRowShardKey(cycleId, groupId),
-          JSON.stringify({
-            version: 4,
-            cycleId,
-            groupId,
-            pages,
-            summary: groupSummary
-          }),
-          { expirationTtl: ROW_SHARD_RETENTION_TTL }
-        );
-        // Separating summaries lets completion logic read only a few KB instead of parsing all rows.
         await env.TRAFFIC_CACHE.put(
           `${GROUP_SUMMARY_KEY_PREFIX}${cycleId}:${groupId}`,
           JSON.stringify({ cycleId, groupId, summary: groupSummary }),
@@ -1568,6 +1619,8 @@ export default {
           COLLECTOR_STATE_KEY,
           JSON.stringify({
             collectorVersion: 4,
+            rowShardPages,
+            activeRowShardPages,
             inProgress: true,
             phase: null,
             activeCycleId,
@@ -1598,7 +1651,7 @@ export default {
       // 전체 수집 완료 시에는 작은 shard summaries만 결합한다. rows 배열 전체를 만들지 않는다.
       const groupAnalyses = await Promise.all(
         Array.from({ length: ROW_GROUP_COUNT }, async (_, groupId) =>
-          (await readCycleGroupSummary(env, cycleId, groupId)) || calculateBusanAnalysis([])
+          (await readCycleGroupSummary(env, cycleId, groupId, rowShardPages)) || calculateBusanAnalysis([])
         )
       );
       const busanOverview = combineGroupAnalyses(groupAnalyses);
@@ -1606,6 +1659,7 @@ export default {
       const initialAnalysis = {
         fetchedAt: completedAt,
         rowCycleId: cycleId,
+        rowShardPages,
         source: "부산광역시 링크소통정보",
         warning: null,
         totalPages,
@@ -1637,6 +1691,8 @@ export default {
         COLLECTOR_STATE_KEY,
         JSON.stringify({
           collectorVersion: 4,
+          rowShardPages,
+          activeRowShardPages: rowShardPages,
           inProgress: false,
           phase: null,
           activeCycleId: cycleId,
