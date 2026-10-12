@@ -123,7 +123,7 @@ function evaluateTrafficStatus(speed, roadCategory = "URBAN_ROAD") {
   }
 }
 
-function calculateBusanStats(rows) {
+function calculateBusanAnalysis(rows) {
   let totalCount = 0;
   let totalSpeed = 0;
   let smoothCount = 0;
@@ -131,9 +131,15 @@ function calculateBusanStats(rows) {
   let congestedCount = 0;
   let slowestRow = null;
   let slowestSpeed = Infinity;
+  const topCandidates = [];
 
-  // 한 번의 순회에서 통계와 최저 속도를 계산한다.
-  // 이전 구현은 filter + 통계 순회 + 전체 정렬로 같은 배열을 여러 번 처리했다.
+  const comparePriority = (statusA, speedA, statusB, speedB) => {
+    if (statusA === "CONGESTED" && statusB !== "CONGESTED") return -1;
+    if (statusA !== "CONGESTED" && statusB === "CONGESTED") return 1;
+    return Number(speedA) - Number(speedB);
+  };
+
+  // 통계와 TOP 10을 한 번의 순회에서 계산해 불필요한 전체 배열 정렬을 피한다.
   for (const row of rows) {
     const speed = Number(row.speed);
     if (!Number.isFinite(speed) || speed < 0) continue;
@@ -151,10 +157,37 @@ function calculateBusanStats(rows) {
       slowestSpeed = speed;
       slowestRow = row;
     }
+
+    const sectionKey = `${row.roadName}-${row.startName}-${row.endName}`;
+    const duplicateIndex = topCandidates.findIndex((candidate) => candidate.sectionKey === sectionKey);
+    if (duplicateIndex >= 0) {
+      const duplicate = topCandidates[duplicateIndex];
+      if (comparePriority(evaluation.status, speed, duplicate.status, duplicate.speed) >= 0) continue;
+      topCandidates.splice(duplicateIndex, 1);
+    }
+
+    let insertAt = topCandidates.findIndex((candidate) =>
+      comparePriority(evaluation.status, speed, candidate.status, candidate.speed) < 0
+    );
+    if (insertAt < 0) insertAt = topCandidates.length;
+
+    if (insertAt < 10) {
+      topCandidates.splice(insertAt, 0, {
+        row,
+        sectionKey,
+        speed,
+        categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
+        status: evaluation.status,
+        statusText: evaluation.statusText,
+        statusColor: evaluation.color
+      });
+      if (topCandidates.length > 10) topCandidates.pop();
+    }
   }
 
+  let stats;
   if (totalCount === 0) {
-    return {
+    stats = {
       totalCount: 0,
       averageSpeed: 0,
       trafficIndex: 0,
@@ -164,45 +197,67 @@ function calculateBusanStats(rows) {
       congestionLevel: "데이터 없음",
       slowestRoad: null
     };
+  } else {
+    const averageSpeed = Number((totalSpeed / totalCount).toFixed(1));
+    const smoothRatio = Number(((smoothCount / totalCount) * 100).toFixed(1));
+    const slowRatio = Number(((slowCount / totalCount) * 100).toFixed(1));
+    const congestedRatio = Number(((congestedCount / totalCount) * 100).toFixed(1));
+
+    // 부산 교통지수: 원활=1.0, 서행=0.5, 정체=0.0 가중치의 0~100 점수.
+    const trafficIndex = Number(
+      Math.max(0, Math.min(100, smoothRatio + (slowRatio * 0.5))).toFixed(1)
+    );
+
+    let trafficIndexGrade = "매우 혼잡";
+    if (trafficIndex >= 80) trafficIndexGrade = "매우 원활";
+    else if (trafficIndex >= 65) trafficIndexGrade = "원활";
+    else if (trafficIndex >= 50) trafficIndexGrade = "보통";
+    else if (trafficIndex >= 35) trafficIndexGrade = "혼잡";
+
+    let congestionLevel = "원활";
+    if (congestedRatio >= 25) congestionLevel = "매우 혼잡";
+    else if (congestedRatio >= 15) congestionLevel = "혼잡";
+    else if (congestedRatio >= 8 || slowRatio >= 30) congestionLevel = "다소 혼잡";
+
+    stats = {
+      totalCount,
+      averageSpeed,
+      trafficIndex,
+      trafficIndexGrade,
+      statusCounts: { smooth: smoothCount, slow: slowCount, congested: congestedCount },
+      statusRatios: { smooth: smoothRatio, slow: slowRatio, congested: congestedRatio },
+      congestionLevel,
+      slowestRoad: slowestRow ? {
+        roadName: slowestRow.roadName || "무명도로",
+        section: `${slowestRow.startName || ""} → ${slowestRow.endName || ""}`.trim(),
+        speed: Number(slowestRow.speed)
+      } : null
+    };
   }
 
-  const averageSpeed = Number((totalSpeed / totalCount).toFixed(1));
-  const smoothRatio = Number(((smoothCount / totalCount) * 100).toFixed(1));
-  const slowRatio = Number(((slowCount / totalCount) * 100).toFixed(1));
-  const congestedRatio = Number(((congestedCount / totalCount) * 100).toFixed(1));
+  const top10 = topCandidates.map((candidate, index) => ({
+    rank: index + 1,
+    linkId: candidate.row.linkId,
+    roadName: candidate.row.roadName || "도로명 없음",
+    startName: candidate.row.startName || "-",
+    endName: candidate.row.endName || "-",
+    speed: candidate.speed,
+    categoryName: candidate.categoryName,
+    status: candidate.status,
+    statusText: candidate.statusText,
+    statusColor: candidate.statusColor,
+    updatedAt: candidate.row.updatedAt || ""
+  }));
 
-  // 부산 교통지수: 원활=1.0, 서행=0.5, 정체=0.0 가중치의 0~100 점수.
-  const trafficIndex = Number(
-    Math.max(0, Math.min(100, smoothRatio + (slowRatio * 0.5))).toFixed(1)
-  );
+  return { stats, top10 };
+}
 
-  let trafficIndexGrade = "매우 혼잡";
-  if (trafficIndex >= 80) trafficIndexGrade = "매우 원활";
-  else if (trafficIndex >= 65) trafficIndexGrade = "원활";
-  else if (trafficIndex >= 50) trafficIndexGrade = "보통";
-  else if (trafficIndex >= 35) trafficIndexGrade = "혼잡";
+function calculateBusanStats(rows) {
+  return calculateBusanAnalysis(rows).stats;
+}
 
-  let congestionLevel = "원활";
-  if (congestedRatio >= 25) congestionLevel = "매우 혼잡";
-  else if (congestedRatio >= 15) congestionLevel = "혼잡";
-  else if (congestedRatio >= 8 || slowRatio >= 30) congestionLevel = "다소 혼잡";
-
-  const slowestRoad = slowestRow ? {
-    roadName: slowestRow.roadName || "무명도로",
-    section: `${slowestRow.startName || ""} → ${slowestRow.endName || ""}`.trim(),
-    speed: Number(slowestRow.speed)
-  } : null;
-
-  return {
-    totalCount,
-    averageSpeed,
-    trafficIndex,
-    trafficIndexGrade,
-    statusCounts: { smooth: smoothCount, slow: slowCount, congested: congestedCount },
-    statusRatios: { smooth: smoothRatio, slow: slowRatio, congested: congestedRatio },
-    congestionLevel,
-    slowestRoad
-  };
+function calculateTop10(rows) {
+  return calculateBusanAnalysis(rows).top10;
 }
 
 function getTrafficRowKey(row) {
@@ -910,8 +965,9 @@ export default {
         const nextPage = Math.max(currentPage, sequentialPage);
         const nowIso = new Date().toISOString();
 
-        const incrementalStats = calculateBusanStats(accumulator);
-        const incrementalTop10 = calculateTop10(accumulator);
+        const incrementalAnalysis = calculateBusanAnalysis(accumulator);
+        const incrementalStats = incrementalAnalysis.stats;
+        const incrementalTop10 = incrementalAnalysis.top10;
         const incrementalSnapshot = {
           snapshotType: "INCREMENTAL",
           source: "부산광역시 링크소통정보",
@@ -1027,8 +1083,9 @@ export default {
       }
 
       // 3. 비즈니스 파이프라인 연산: 전체 누적 데이터 기준 통계 및 정체 TOP 10 산출
-      const stats = calculateBusanStats(rows);
-      const top10 = calculateTop10(rows);
+      const completeAnalysis = calculateBusanAnalysis(rows);
+      const stats = completeAnalysis.stats;
+      const top10 = completeAnalysis.top10;
 
       let suddenCongestion = {
         detectedCount: 0,
