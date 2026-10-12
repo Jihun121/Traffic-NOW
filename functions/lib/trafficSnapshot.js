@@ -98,43 +98,7 @@ function mergeRows(baseRows, overlayRows) {
   return Array.from(byKey.values());
 }
 
-function emptyRowShard(cycleId, groupId) {
-  return { cycleId: cycleId || "", groupId, pages: {}, summary: null };
-}
 
-async function readCycleShards(env, cycleId, groupIds = null) {
-  const ids = Array.isArray(groupIds)
-    ? [...new Set(groupIds)].filter((id) => Number.isInteger(id) && id >= 0 && id < ROW_GROUP_COUNT)
-    : Array.from({ length: ROW_GROUP_COUNT }, (_, index) => index);
-  const result = Array.from({ length: ROW_GROUP_COUNT }, (_, groupId) => emptyRowShard(cycleId, groupId));
-  if (!cycleId || ids.length === 0) return result;
-
-  const raw = await Promise.all(
-    ids.map((groupId) =>
-      env.TRAFFIC_CACHE.get(getCycleRowShardKey(cycleId, groupId), "json")
-    )
-  );
-
-  ids.forEach((groupId, index) => {
-    const shard = raw[index];
-    if (shard && shard.cycleId === cycleId && shard.pages && typeof shard.pages === "object") {
-      result[groupId] = shard;
-    }
-  });
-
-  return result;
-}
-
-function mergeShardPages(baseShard, overlayShard, cycleId, groupId) {
-  return {
-    cycleId,
-    groupId,
-    pages: {
-      ...(baseShard?.pages || {}),
-      ...(overlayShard?.pages || {})
-    }
-  };
-}
 
 function buildStatsFromAggregate(aggregate) {
   const totalCount = Number(aggregate?.totalCount || 0);
