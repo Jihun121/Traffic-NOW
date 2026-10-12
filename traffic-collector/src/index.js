@@ -13,6 +13,7 @@ const COLLECTION_TTL = 60 * 60 * 24 * 14;
 const HISTORY_INDEX_KEY = "traffic:busan:history:index";
 const HISTORY_KEY_PREFIX = "traffic:busan:history:";
 const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
+const GROUP_SUMMARY_KEY_PREFIX = "traffic:busan:rows:v4-summary:";
 const HISTORY_RETENTION_DAYS = 14;
 const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
 const HISTORY_MAX_ENTRIES = 96;
@@ -399,6 +400,14 @@ async function readCycleRowShard(env, cycleId, groupId) {
     return { cycleId, groupId, pages: {}, summary: null };
   }
   return shard;
+}
+
+async function readCycleGroupSummary(env, cycleId, groupId) {
+  const summary = await env.TRAFFIC_CACHE.get(
+    `${GROUP_SUMMARY_KEY_PREFIX}${cycleId}:${groupId}`,
+    "json"
+  );
+  return summary?.cycleId === cycleId ? summary.summary : null;
 }
 
 function rowsFromPageShard(shard) {
@@ -1052,11 +1061,11 @@ export default {
           { expirationTtl: LATEST_SNAPSHOT_TTL }
         );
 
-        const groupSummaries = [];
-        for (let groupId = 0; groupId < ROW_GROUP_COUNT; groupId += 1) {
-          const shard = await readCycleRowShard(env, cycleId, groupId);
-          groupSummaries.push(shard.summary || calculateBusanAnalysis(rowsFromPageShard(shard)));
-        }
+        const groupSummaries = await Promise.all(
+          Array.from({ length: ROW_GROUP_COUNT }, async (_, groupId) =>
+            (await readCycleGroupSummary(env, cycleId, groupId)) || calculateBusanAnalysis([])
+          )
+        );
 
         const busanOverview = combineGroupAnalyses(groupSummaries);
         const itsOverview = itsRows.length ? calculateBusanAnalysis(itsRows) : null;
@@ -1451,6 +1460,13 @@ export default {
 
         const groupRows = rowsFromPageShard({ pages });
         const groupAnalysis = calculateBusanAnalysis(groupRows);
+        const groupSummary = {
+          stats: groupAnalysis.stats,
+          top10: groupAnalysis.top10,
+          aggregate: groupAnalysis.aggregate,
+          totalRows: groupRows.length,
+          updatedAt: nowIso
+        };
         await env.TRAFFIC_CACHE.put(
           getCycleRowShardKey(cycleId, groupId),
           JSON.stringify({
@@ -1458,14 +1474,14 @@ export default {
             cycleId,
             groupId,
             pages,
-            summary: {
-              stats: groupAnalysis.stats,
-              top10: groupAnalysis.top10,
-              aggregate: groupAnalysis.aggregate,
-              totalRows: groupRows.length,
-              updatedAt: nowIso
-            }
+            summary: groupSummary
           }),
+          { expirationTtl: HISTORY_RETENTION_TTL }
+        );
+        // Separating summaries lets completion logic read only a few KB instead of parsing all rows.
+        await env.TRAFFIC_CACHE.put(
+          `${GROUP_SUMMARY_KEY_PREFIX}${cycleId}:${groupId}`,
+          JSON.stringify({ cycleId, groupId, summary: groupSummary }),
           { expirationTtl: HISTORY_RETENTION_TTL }
         );
       }
@@ -1507,6 +1523,7 @@ export default {
             failedPages: [...failedPages].sort((a, b) => a - b),
             cycleStartedAt,
             refreshedLinks,
+            lastBatchRows: batchPages.reduce((sum, item) => sum + item.rows.length, 0),
             updatedAt: nowIso,
             lastIncrementalUpdateAt: nowIso
           }),
@@ -1522,11 +1539,11 @@ export default {
       }
 
       // 전체 수집 완료 시에는 작은 shard summaries만 결합한다. rows 배열 전체를 만들지 않는다.
-      const groupAnalyses = [];
-      for (let groupId = 0; groupId < ROW_GROUP_COUNT; groupId += 1) {
-        const shard = await readCycleRowShard(env, cycleId, groupId);
-        groupAnalyses.push(shard.summary || calculateBusanAnalysis(rowsFromPageShard(shard)));
-      }
+      const groupAnalyses = await Promise.all(
+        Array.from({ length: ROW_GROUP_COUNT }, async (_, groupId) =>
+          (await readCycleGroupSummary(env, cycleId, groupId)) || calculateBusanAnalysis([])
+        )
+      );
       const busanOverview = combineGroupAnalyses(groupAnalyses);
       const completedAt = new Date().toISOString();
       const previousAnalysis = (await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json")) || {};
