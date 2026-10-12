@@ -258,7 +258,116 @@ function calculateBusanAnalysis(rows, includeTop10 = true) {
     updatedAt: candidate.row.updatedAt || ""
   })) : [];
 
-  return { stats, top10 };
+  return {
+    stats,
+    top10,
+    aggregate: {
+      totalCount,
+      totalSpeed,
+      smoothCount,
+      slowCount,
+      congestedCount,
+      slowestRoad: stats.slowestRoad
+    }
+  };
+}
+
+function buildStatsFromAggregate(aggregate) {
+  const totalCount = Number(aggregate?.totalCount || 0);
+  const totalSpeed = Number(aggregate?.totalSpeed || 0);
+  const smoothCount = Number(aggregate?.smoothCount || 0);
+  const slowCount = Number(aggregate?.slowCount || 0);
+  const congestedCount = Number(aggregate?.congestedCount || 0);
+
+  if (!totalCount) {
+    return {
+      totalCount: 0,
+      averageSpeed: 0,
+      trafficIndex: 0,
+      trafficIndexGrade: "데이터 없음",
+      statusCounts: { smooth: 0, slow: 0, congested: 0 },
+      statusRatios: { smooth: 0, slow: 0, congested: 0 },
+      congestionLevel: "데이터 없음",
+      slowestRoad: null
+    };
+  }
+
+  const averageSpeed = Number((totalSpeed / totalCount).toFixed(1));
+  const smoothRatio = Number(((smoothCount / totalCount) * 100).toFixed(1));
+  const slowRatio = Number(((slowCount / totalCount) * 100).toFixed(1));
+  const congestedRatio = Number(((congestedCount / totalCount) * 100).toFixed(1));
+  const trafficIndex = Number(Math.max(0, Math.min(100, smoothRatio + slowRatio * 0.5)).toFixed(1));
+
+  let trafficIndexGrade = "매우 혼잡";
+  if (trafficIndex >= 80) trafficIndexGrade = "매우 원활";
+  else if (trafficIndex >= 65) trafficIndexGrade = "원활";
+  else if (trafficIndex >= 50) trafficIndexGrade = "보통";
+  else if (trafficIndex >= 35) trafficIndexGrade = "혼잡";
+
+  let congestionLevel = "원활";
+  if (congestedRatio >= 25) congestionLevel = "매우 혼잡";
+  else if (congestedRatio >= 15) congestionLevel = "혼잡";
+  else if (congestedRatio >= 8 || slowRatio >= 30) congestionLevel = "다소 혼잡";
+
+  return {
+    totalCount,
+    averageSpeed,
+    trafficIndex,
+    trafficIndexGrade,
+    statusCounts: { smooth: smoothCount, slow: slowCount, congested: congestedCount },
+    statusRatios: { smooth: smoothRatio, slow: slowRatio, congested: congestedRatio },
+    congestionLevel,
+    slowestRoad: aggregate.slowestRoad || null
+  };
+}
+
+function combineGroupAnalyses(groupAnalyses) {
+  const aggregate = {
+    totalCount: 0,
+    totalSpeed: 0,
+    smoothCount: 0,
+    slowCount: 0,
+    congestedCount: 0,
+    slowestRoad: null
+  };
+  const topCandidates = [];
+  const seenSections = new Set();
+
+  const compareRows = (a, b) => {
+    if (a.status === "CONGESTED" && b.status !== "CONGESTED") return -1;
+    if (a.status !== "CONGESTED" && b.status === "CONGESTED") return 1;
+    return Number(a.speed) - Number(b.speed);
+  };
+
+  for (const analysis of groupAnalyses) {
+    const part = analysis?.aggregate || {};
+    aggregate.totalCount += Number(part.totalCount || 0);
+    aggregate.totalSpeed += Number(part.totalSpeed || 0);
+    aggregate.smoothCount += Number(part.smoothCount || 0);
+    aggregate.slowCount += Number(part.slowCount || 0);
+    aggregate.congestedCount += Number(part.congestedCount || 0);
+
+    const slowest = part.slowestRoad;
+    if (slowest && (!aggregate.slowestRoad || Number(slowest.speed) < Number(aggregate.slowestRoad.speed))) {
+      aggregate.slowestRoad = slowest;
+    }
+
+    for (const item of Array.isArray(analysis?.top10) ? analysis.top10 : []) {
+      const sectionKey = `${item.roadName}-${item.startName}-${item.endName}`;
+      if (seenSections.has(sectionKey)) continue;
+      seenSections.add(sectionKey);
+      topCandidates.push(item);
+    }
+  }
+
+  topCandidates.sort(compareRows);
+  const top10 = topCandidates.slice(0, 10).map((item, index) => ({ ...item, rank: index + 1 }));
+
+  return {
+    stats: buildStatsFromAggregate(aggregate),
+    top10,
+    aggregate
+  };
 }
 
 function calculateBusanStats(rows) {
