@@ -1276,316 +1276,18 @@ export default {
       const busanApiKey = getApiKey(env.BUSAN_TRAFFIC_API_KEY || env.BUSAN_API_KEY);
       const itsApiKey = getApiKey(env.ITS_API_KEY);
 
-      if (!busanApiKey) throw new Error("BUSAN_TRAFFIC_API_KEY is not configured.");
       if (!env.TRAFFIC_CACHE) throw new Error("TRAFFIC_CACHE KV binding is not configured.");
+
+      // A separate Cron owns expensive postprocessing so 10-minute collection keeps its cadence.
+      if (controller?.cron === "*/2 * * * *") {
+        await runPostprocessing(env, itsApiKey);
+        return;
+      }
+
+      if (!busanApiKey) throw new Error("BUSAN_TRAFFIC_API_KEY is not configured.");
 
       let state = (await env.TRAFFIC_CACHE.get(COLLECTOR_STATE_KEY, "json")) || {};
       const version4 = Number(state?.collectorVersion || 0) === 4;
-
-      // 단계 1: COMPLETE 데이터의 보조 ITS 통계 포함. 원본 도로 행 전체를 읽지 않고 그룹 요약만 결합한다.
-      if (version4 && state.phase === "its-pending") {
-        const cycleId = String(state.pendingCycleId || state.activeCycleId || "");
-        const fetchedAt = String(state.pendingSnapshotFetchedAt || state.lastCompletedAt || "");
-        if (!cycleId || !fetchedAt) throw new Error("TRAFFIC_ITS_PENDING_STATE_INVALID");
-
-        let itsRows = [];
-        let itsWarning = null;
-        try {
-          itsRows = await fetchItsData(itsApiKey);
-          itsRows = itsRows.map((row) => {
-            const category = getRoadCategory(row.roadName);
-            const evaluation = evaluateTrafficStatus(row.speed, category);
-            return {
-              ...row,
-              category,
-              categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
-              status: evaluation.status,
-              statusText: evaluation.statusText,
-              statusColor: evaluation.color,
-              source: "ITS",
-              updatedAt: new Date().toISOString()
-            };
-          });
-        } catch (error) {
-          itsWarning = error?.message || String(error);
-          console.warn({ event: "collector-its-fetch-failed", error: itsWarning });
-          itsRows = [];
-        }
-
-        await env.TRAFFIC_CACHE.put(
-          "traffic:busan:its:latest",
-          JSON.stringify({ fetchedAt, rows: itsRows, warning: itsWarning }),
-          { expirationTtl: LATEST_SNAPSHOT_TTL }
-        );
-
-        const groupSummaries = await Promise.all(
-          Array.from({ length: ROW_GROUP_COUNT }, async (_, groupId) =>
-            (await readCycleGroupSummary(env, cycleId, groupId)) || calculateBusanAnalysis([])
-          )
-        );
-
-        const busanOverview = combineGroupAnalyses(groupSummaries);
-        const itsOverview = itsRows.length ? calculateBusanAnalysis(itsRows) : null;
-        const overall = combineGroupAnalyses(
-          itsOverview ? [...groupSummaries, itsOverview] : groupSummaries
-        );
-        const analysis = {
-          fetchedAt,
-          rowCycleId: cycleId,
-          source: itsRows.length
-            ? "부산광역시 링크소통정보 & 국토교통부 ITS"
-            : "부산광역시 링크소통정보",
-          warning: itsWarning,
-          totalPages: Number(state.totalPages || 0),
-          reportedTotalCount: Number(state.reportedTotalCount || 0),
-          stats: overall.stats,
-          top10: overall.top10,
-          busanStats: busanOverview.stats,
-          busanTop10: busanOverview.top10,
-          // These are calculated in their own bounded Cron stages for this cycle.
-          suddenAnalysisComplete: false,
-          suddenCongestion: {
-            detectedCount: 0,
-            items: [],
-            baselineSampleSize: BASELINE_SAMPLE_SIZE,
-            minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
-            mode: "same-timeband-baseline",
-            pending: true
-          },
-          trafficBriefing: null,
-          updatedAt: new Date().toISOString()
-        };
-
-        await env.TRAFFIC_CACHE.put(
-          SNAPSHOT_ANALYSIS_KEY,
-          JSON.stringify(analysis),
-          { expirationTtl: LATEST_SNAPSHOT_TTL }
-        );
-        await env.TRAFFIC_CACHE.put(
-          COLLECTOR_STATE_KEY,
-          JSON.stringify({
-            ...state,
-            collectorVersion: 4,
-            inProgress: false,
-            phase: "sudden-pending",
-            activeCycleId: cycleId,
-            currentCycleId: null,
-            pendingCycleId: cycleId,
-            pendingSnapshotFetchedAt: fetchedAt,
-            baselineShardCursor: 0,
-            pendingAlerts: [],
-            pendingDetectedCount: 0,
-            pendingTimeBand: getTimeBand(getKoreaHour(new Date(fetchedAt))),
-            updatedAt: new Date().toISOString()
-          }),
-          { expirationTtl: COLLECTION_TTL }
-        );
-        console.log({
-          event: "collector-its-analysis-complete",
-          fetchedAt,
-          itsRows: itsRows.length,
-          totalRows: overall.stats.totalCount,
-          avgSpeed: overall.stats.averageSpeed
-        });
-        return;
-      }
-
-      // 단계 2: 기준 데이터 비교를 페이지 그룹 단위로 처리해 매 실행의 CPU 사용량을 제한한다.
-      if (version4 && state.phase === "sudden-pending") {
-        const cycleId = String(state.pendingCycleId || state.activeCycleId || "");
-        const sampleId = String(state.pendingSnapshotFetchedAt || "");
-        if (!cycleId || !sampleId) throw new Error("TRAFFIC_SUDDEN_PENDING_STATE_INVALID");
-
-        const cursor = Math.max(
-          0,
-          Math.min(ROW_GROUP_COUNT, Number(state.baselineShardCursor || 0))
-        );
-        const groupIds = [];
-        for (
-          let groupId = cursor;
-          groupId < Math.min(ROW_GROUP_COUNT, cursor + BASELINE_SHARDS_PER_RUN);
-          groupId += 1
-        ) {
-          groupIds.push(groupId);
-        }
-
-        const timeBand = state.pendingTimeBand ||
-          getTimeBand(getKoreaHour(new Date(sampleId)));
-        let pendingAlerts = Array.isArray(state.pendingAlerts) ? state.pendingAlerts : [];
-        let pendingDetectedCount = Number(state.pendingDetectedCount || 0);
-
-        for (const groupId of groupIds) {
-          const shard = await readCycleRowShard(env, cycleId, groupId);
-          const result = await calculateAndUpdateSuddenCongestion(
-            env,
-            rowsFromPageShard(shard),
-            sampleId,
-            timeBand,
-            groupId
-          );
-          pendingDetectedCount += Number(result.detectedCount || 0);
-          pendingAlerts = mergeSuddenCongestionAlerts(pendingAlerts, result.items);
-        }
-
-        const nextCursor = cursor + groupIds.length;
-        const nextState = {
-          ...state,
-          collectorVersion: 4,
-          inProgress: false,
-          currentCycleId: null,
-          activeCycleId: cycleId,
-          pendingCycleId: cycleId,
-          baselineShardCursor: nextCursor,
-          pendingAlerts,
-          pendingDetectedCount,
-          updatedAt: new Date().toISOString()
-        };
-
-        if (nextCursor >= ROW_GROUP_COUNT) {
-          const analysis = (await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json")) || {};
-          if (analysis.fetchedAt !== sampleId) {
-            throw new Error("TRAFFIC_SUDDEN_ANALYSIS_TIMESTAMP_MISMATCH");
-          }
-          analysis.suddenCongestion = {
-            detectedCount: pendingDetectedCount,
-            items: pendingAlerts,
-            baselineSampleSize: BASELINE_SAMPLE_SIZE,
-            minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
-            mode: "same-timeband-baseline",
-            pending: false,
-            timeBand,
-            thresholds: {
-              minimumDropKmh: SUDDEN_CONGESTION_MIN_DROP_KMH,
-              minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
-            }
-          };
-          analysis.suddenAnalysisComplete = true;
-          analysis.updatedAt = new Date().toISOString();
-          await env.TRAFFIC_CACHE.put(
-            SNAPSHOT_ANALYSIS_KEY,
-            JSON.stringify(analysis),
-            { expirationTtl: LATEST_SNAPSHOT_TTL }
-          );
-          await env.TRAFFIC_CACHE.put(
-            COLLECTOR_STATE_KEY,
-            JSON.stringify({
-              ...nextState,
-              phase: "briefing-pending",
-              baselineShardCursor: 0,
-              pendingAlerts: [],
-              pendingDetectedCount: 0
-            }),
-            { expirationTtl: COLLECTION_TTL }
-          );
-          console.log({
-            event: "collector-sudden-analysis-complete",
-            fetchedAt: sampleId,
-            baselineShards: ROW_GROUP_COUNT,
-            detectedCount: pendingDetectedCount
-          });
-        } else {
-          await env.TRAFFIC_CACHE.put(
-            COLLECTOR_STATE_KEY,
-            JSON.stringify({ ...nextState, phase: "sudden-pending" }),
-            { expirationTtl: COLLECTION_TTL }
-          );
-          console.log({
-            event: "collector-sudden-analysis-progress",
-            fetchedAt: sampleId,
-            completedShards: nextCursor,
-            totalShards: ROW_GROUP_COUNT,
-            detectedCountSoFar: pendingDetectedCount
-          });
-        }
-        return;
-      }
-
-      // 단계 3: 브리핑은 작은 summary/index만 이용한다.
-      if (version4 && state.phase === "briefing-pending") {
-        const analysis = (await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json")) || null;
-        if (!analysis || analysis.fetchedAt !== state.pendingSnapshotFetchedAt) {
-          throw new Error("TRAFFIC_BRIEFING_ANALYSIS_MISSING");
-        }
-
-        const historyIndex = (await env.TRAFFIC_CACHE.get(HISTORY_INDEX_KEY, "json")) || [];
-        const previousHistoryEntry = Array.isArray(historyIndex)
-          ? historyIndex
-              .filter((entry) => Number.isFinite(Date.parse(entry?.fetchedAt || "")))
-              .sort((a, b) => Date.parse(b.fetchedAt) - Date.parse(a.fetchedAt))[0]
-          : null;
-
-        analysis.trafficBriefing = buildTrafficBriefing(
-          analysis.stats,
-          previousHistoryEntry,
-          analysis.suddenCongestion,
-          analysis.top10
-        );
-        analysis.updatedAt = new Date().toISOString();
-        await env.TRAFFIC_CACHE.put(
-          SNAPSHOT_ANALYSIS_KEY,
-          JSON.stringify(analysis),
-          { expirationTtl: LATEST_SNAPSHOT_TTL }
-        );
-        await env.TRAFFIC_CACHE.put(
-          COLLECTOR_STATE_KEY,
-          JSON.stringify({
-            ...state,
-            collectorVersion: 4,
-            inProgress: false,
-            phase: "history-pending",
-            currentCycleId: null,
-            activeCycleId: analysis.rowCycleId,
-            pendingCycleId: analysis.rowCycleId,
-            updatedAt: new Date().toISOString()
-          }),
-          { expirationTtl: COLLECTION_TTL }
-        );
-        console.log({
-          event: "collector-briefing-complete",
-          fetchedAt: analysis.fetchedAt,
-          trend: analysis.trafficBriefing?.trend || null
-        });
-        return;
-      }
-
-      // 단계 4: 이력은 통계/브리핑 메타데이터와 완료된 row-shard의 포인터만 저장한다.
-      if (version4 && state.phase === "history-pending") {
-        const analysis = (await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json")) || null;
-        if (!analysis || analysis.fetchedAt !== state.pendingSnapshotFetchedAt) {
-          throw new Error("TRAFFIC_HISTORY_ANALYSIS_MISSING");
-        }
-        const historyResult = await archiveHistoricalSummary(env, analysis);
-        const completedAt = analysis.fetchedAt;
-        await env.TRAFFIC_CACHE.put(
-          COLLECTOR_STATE_KEY,
-          JSON.stringify({
-            collectorVersion: 4,
-            inProgress: false,
-            phase: null,
-            currentPage: 1,
-            totalPages: Number(state.totalPages || 0),
-            reportedTotalCount: Number(state.reportedTotalCount || 0),
-            completedPages: [],
-            failedPages: [],
-            currentCycleId: null,
-            activeCycleId: analysis.rowCycleId,
-            pendingCycleId: null,
-            cycleStartedAt: null,
-            refreshedLinks: 0,
-            updatedAt: new Date().toISOString(),
-            lastCompletedAt: completedAt,
-            lastIncrementalUpdateAt: state.lastIncrementalUpdateAt || completedAt
-          }),
-          { expirationTtl: COLLECTION_TTL }
-        );
-        console.log({
-          event: "collector-history-archive-success",
-          historyKey: historyResult.historyKey,
-          historyEntries: historyResult.historyEntries,
-          historyRows: historyResult.historyRows
-        });
-        return;
-      }
 
       // 새 사이클을 시작한다. 기존 activeCycleId는 다음 전체 사이클이 검증되기 전까지 보존한다.
       const resumingCycle = version4 && state.inProgress === true && state.currentCycleId;
@@ -1841,11 +1543,9 @@ export default {
         JSON.stringify({
           collectorVersion: 4,
           inProgress: false,
-          phase: "its-pending",
+          phase: null,
           activeCycleId: cycleId,
           currentCycleId: null,
-          pendingCycleId: cycleId,
-          pendingSnapshotFetchedAt: completedAt,
           currentPage: 1,
           totalPages,
           reportedTotalCount,
@@ -1855,6 +1555,23 @@ export default {
           refreshedLinks,
           lastIncrementalUpdateAt: nowIso,
           lastCompletedAt: completedAt,
+          updatedAt: new Date().toISOString()
+        }),
+        { expirationTtl: COLLECTION_TTL }
+      );
+      await env.TRAFFIC_CACHE.put(
+        POSTPROCESS_STATE_KEY,
+        JSON.stringify({
+          cycleId,
+          fetchedAt: completedAt,
+          totalPages,
+          reportedTotalCount,
+          phase: "its-pending",
+          cursor: 0,
+          pendingAlerts: [],
+          pendingDetectedCount: 0,
+          timeBand: getTimeBand(getKoreaHour(new Date(completedAt))),
+          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }),
         { expirationTtl: COLLECTION_TTL }
