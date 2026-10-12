@@ -46,7 +46,7 @@ test("traffic API returns a valid fallback timestamp when incremental state has 
     updatedAt: " "
   };
   const legacySnapshot = {
-    source: "부산광역시 링크소통정보",
+    source: "BUSAN",
     rows: [{
       linkId: "1440054400",
       roadName: "중앙고속도로",
