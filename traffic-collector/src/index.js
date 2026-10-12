@@ -2,25 +2,28 @@ import { normalizeTrafficPayload } from "../../functions/lib/normalizeTraffic.js
 
 const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
-const SNAPSHOT_KEY = "traffic:busan:latest";
+const SNAPSHOT_KEY = "traffic:busan:latest"; // 구형 스냅샷 호환용
 const SNAPSHOT_ANALYSIS_KEY = "traffic:busan:latest-analysis";
 const COLLECTOR_STATE_KEY = "traffic:busan:collector-state";
-const COLLECTOR_ACCUMULATOR_KEY = "traffic:busan:collector-accumulator";
 const PAGE_SIZE = 100;
 const PAGES_PER_RUN = 3;
 const REQUEST_TIMEOUT_MS = 60000;
-const LATEST_SNAPSHOT_TTL = 60 * 60 * 12;
-const COLLECTION_TTL = 60 * 60 * 8;
+const LATEST_SNAPSHOT_TTL = 60 * 60 * 24 * 14;
+const COLLECTION_TTL = 60 * 60 * 24 * 14;
 const HISTORY_INDEX_KEY = "traffic:busan:history:index";
 const HISTORY_KEY_PREFIX = "traffic:busan:history:";
+const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
 const HISTORY_RETENTION_DAYS = 14;
 const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
 const HISTORY_MAX_ENTRIES = 96;
-// 시간대별 기준값을 별도 KV에 저장해 한 번의 실행에서 전체 시간대 데이터를 재직렬화하지 않는다.
-const BASELINE_KEY_PREFIX = "traffic:busan:baseline-by-timeband:v4:";
-const BASELINE_VERSION = 4;
-const BASELINE_SHARD_COUNT = 12;
-const BASELINE_SHARDS_PER_RUN = 4;
+// 10개 그룹으로 나눠 Worker가 매번 전체 9천 행을 읽거나 저장하지 않도록 한다.
+const ROW_GROUP_COUNT = 10;
+const ROW_PAGES_PER_GROUP = 10;
+// 시간대별 기준값도 같은 페이지 그룹 단위로 분할해 소량씩 갱신한다.
+const BASELINE_KEY_PREFIX = "traffic:busan:baseline-by-timeband:v5:";
+const BASELINE_VERSION = 5;
+const BASELINE_SHARD_COUNT = ROW_GROUP_COUNT;
+const BASELINE_SHARDS_PER_RUN = 3;
 const BASELINE_SAMPLE_SIZE = 6;
 const SUDDEN_CONGESTION_MIN_SAMPLES = 3;
 const SUDDEN_CONGESTION_MIN_DROP_KMH = 10;
@@ -271,14 +274,29 @@ function getTrafficRowKey(row) {
   return `section:${row.roadName || ""}|${row.sectionName || ""}|${row.startName || ""}|${row.endName || ""}`;
 }
 
-function getBaselineShardIndex(row) {
-  const value = String(row?.linkId || getTrafficRowKey(row));
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+function getRowGroupIndex(page) {
+  return Math.max(0, Math.min(ROW_GROUP_COUNT - 1, Math.floor((Number(page) - 1) / ROW_PAGES_PER_GROUP)));
+}
+
+function getCycleRowShardKey(cycleId, groupId) {
+  return `${ROW_SHARD_KEY_PREFIX}${cycleId}:${groupId}`;
+}
+
+async function readCycleRowShard(env, cycleId, groupId) {
+  const shard = await env.TRAFFIC_CACHE.get(getCycleRowShardKey(cycleId, groupId), "json");
+  if (!shard || shard.cycleId !== cycleId || !shard.pages || typeof shard.pages !== "object") {
+    return { cycleId, groupId, pages: {}, summary: null };
   }
-  return (hash >>> 0) % BASELINE_SHARD_COUNT;
+  return shard;
+}
+
+function rowsFromPageShard(shard) {
+  const pages = shard?.pages && typeof shard.pages === "object" ? shard.pages : {};
+  return Object.keys(pages)
+    .map(Number)
+    .filter(Number.isInteger)
+    .sort((a, b) => a - b)
+    .flatMap((page) => Array.isArray(pages[String(page)]) ? pages[String(page)] : []);
 }
 
 function mergeSuddenCongestionAlerts(existing, incoming) {
