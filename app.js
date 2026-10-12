@@ -1227,11 +1227,21 @@ async function loadCommuteComparison() {
   }
 }
 
-function renderTrafficBriefing(briefing) {
+function renderTrafficBriefing(briefing, postprocessPhase = "") {
   if (!briefing) {
-    if (briefingHeadline) briefingHeadline.textContent = "아직 비교할 과거 교통 사이클이 없습니다.";
-    if (briefingSummary) briefingSummary.textContent = "첫 번째 완성 스냅샷이 저장되면 이후 사이클부터 자동 브리핑이 생성됩니다.";
-    if (briefingTrendBadge) briefingTrendBadge.textContent = "FIRST SNAPSHOT";
+    const isProcessing = [
+      "its-pending",
+      "sudden-pending",
+      "briefing-pending",
+      "history-pending"
+    ].includes(String(postprocessPhase || ""));
+    if (briefingHeadline) briefingHeadline.textContent = isProcessing
+      ? "완성된 교통 스냅샷의 후처리 분석을 진행 중입니다."
+      : "아직 비교할 과거 교통 사이클이 없습니다.";
+    if (briefingSummary) briefingSummary.textContent = isProcessing
+      ? "평균 속도와 교통 통계는 먼저 갱신되며, 급격한 정체 분석·브리핑·HISTORY는 후속 Cron에서 순서대로 완료됩니다."
+      : "첫 번째 완성 스냅샷이 저장되면 이후 사이클부터 자동 브리핑이 생성됩니다.";
+    if (briefingTrendBadge) briefingTrendBadge.textContent = isProcessing ? "ANALYZING" : "FIRST SNAPSHOT";
     if (briefingIndexDelta) briefingIndexDelta.textContent = "-";
     if (briefingSpeedDelta) briefingSpeedDelta.textContent = "-";
     if (briefingCongestionDelta) briefingCongestionDelta.textContent = "-";
@@ -1286,6 +1296,12 @@ function renderSuddenCongestion(sudden) {
 
   const items = Array.isArray(sudden && sudden.items) ? sudden.items : [];
   const detectedCount = Number(sudden && sudden.detectedCount || 0);
+
+  if (sudden?.pending) {
+    suddenCongestionContainer.innerHTML =
+      '<div class="loading-placeholder">완성된 스냅샷의 급격한 정체 분석을 진행 중입니다. 분석이 끝나면 자동으로 갱신됩니다.</div>';
+    return;
+  }
 
   if (items.length === 0) {
     const message = detectedCount > 0
@@ -1689,7 +1705,7 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
       renderStats(state.stats, payload.updatedAt);
       renderTop10(state.top10);
       renderSuddenCongestion(state.suddenCongestion);
-      renderTrafficBriefing(payload.trafficBriefing || null);
+      renderTrafficBriefing(payload.trafficBriefing || null, payload.postprocessPhase || "");
       loadTrafficMap(state.regionKey);
       renderTable();
     }
