@@ -1082,6 +1082,7 @@ async function runPostprocessing(env, itsApiKey) {
     analysis.top10 = overall.top10;
     analysis.busanStats = busanOverview.stats;
     analysis.busanTop10 = busanOverview.top10;
+    analysis.postprocessPhase = "sudden-pending";
     analysis.suddenAnalysisComplete = false;
     analysis.suddenCongestion = {
       detectedCount: 0,
@@ -1165,6 +1166,7 @@ async function runPostprocessing(env, itsApiKey) {
           minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
         }
       };
+      analysis.postprocessPhase = "briefing-pending";
       analysis.suddenAnalysisComplete = true;
       analysis.updatedAt = new Date().toISOString();
       await env.TRAFFIC_CACHE.put(
@@ -1229,6 +1231,7 @@ async function runPostprocessing(env, itsApiKey) {
       analysis.suddenCongestion,
       analysis.top10
     );
+    analysis.postprocessPhase = "history-pending";
     analysis.updatedAt = new Date().toISOString();
     await env.TRAFFIC_CACHE.put(
       SNAPSHOT_ANALYSIS_KEY,
@@ -1254,6 +1257,13 @@ async function runPostprocessing(env, itsApiKey) {
 
   if (job.phase === "history-pending") {
     const historyResult = await archiveHistoricalSummary(env, analysis);
+    analysis.postprocessPhase = "complete";
+    analysis.updatedAt = new Date().toISOString();
+    await env.TRAFFIC_CACHE.put(
+      SNAPSHOT_ANALYSIS_KEY,
+      JSON.stringify(analysis),
+      { expirationTtl: LATEST_SNAPSHOT_TTL }
+    );
     await env.TRAFFIC_CACHE.delete(POSTPROCESS_STATE_KEY);
     console.log({
       event: "collector-history-archive-success",
@@ -1288,6 +1298,43 @@ export default {
 
       let state = (await env.TRAFFIC_CACHE.get(COLLECTOR_STATE_KEY, "json")) || {};
       const version4 = Number(state?.collectorVersion || 0) === 4;
+
+      if (version4 && !state.inProgress && state.activeCycleId) {
+        const existingJob = await env.TRAFFIC_CACHE.get(POSTPROCESS_STATE_KEY, "json");
+        if (!existingJob?.phase) {
+          const analysis = await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
+          if (
+            analysis?.rowCycleId === state.activeCycleId &&
+            analysis?.fetchedAt &&
+            analysis?.postprocessPhase &&
+            analysis.postprocessPhase !== "complete"
+          ) {
+            await env.TRAFFIC_CACHE.put(
+              POSTPROCESS_STATE_KEY,
+              JSON.stringify({
+                cycleId: analysis.rowCycleId,
+                fetchedAt: analysis.fetchedAt,
+                totalPages: Number(analysis.totalPages || 0),
+                reportedTotalCount: Number(analysis.reportedTotalCount || 0),
+                phase: analysis.postprocessPhase,
+                cursor: 0,
+                pendingAlerts: [],
+                pendingDetectedCount: 0,
+                timeBand: getTimeBand(getKoreaHour(new Date(analysis.fetchedAt))),
+                createdAt: new Date().toISOString(),
+                recovered: true,
+                updatedAt: new Date().toISOString()
+              }),
+              { expirationTtl: COLLECTION_TTL }
+            );
+            console.warn({
+              event: "collector-postprocess-job-recovered",
+              cycleId: analysis.rowCycleId,
+              phase: analysis.postprocessPhase
+            });
+          }
+        }
+      }
 
       // 새 사이클을 시작한다. 기존 activeCycleId는 다음 전체 사이클이 검증되기 전까지 보존한다.
       const resumingCycle = version4 && state.inProgress === true && state.currentCycleId;
@@ -1520,6 +1567,7 @@ export default {
         top10: busanOverview.top10,
         busanStats: busanOverview.stats,
         busanTop10: busanOverview.top10,
+        postprocessPhase: "its-pending",
         suddenAnalysisComplete: false,
         suddenCongestion: {
           detectedCount: 0,
