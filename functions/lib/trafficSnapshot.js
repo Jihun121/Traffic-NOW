@@ -343,7 +343,15 @@ export async function loadTrafficSnapshot(env) {
             groupId,
             currentPagesPerShard
           );
-          if (currentSummary) summaryList.push(currentSummary);
+          if (currentSummary) {
+            summaryList.push(currentSummary);
+          } else {
+            const groupRows = [];
+            for (let page = firstPage; page <= lastPage; page += 1) {
+              groupRows.push(...(rowsByPage.get(page) || []));
+            }
+            if (groupRows.length) summaryList.push(calculateBusanTrafficOverview(groupRows));
+          }
           continue;
         }
 
