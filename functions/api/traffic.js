@@ -82,6 +82,7 @@ export async function onRequestGet(context) {
       top10,
       suddenCongestion,
       trafficBriefing,
+      postprocessPhase: snapshot.postprocessPhase || "",
       data: sortedFiltered.slice(0, 100),
       filteredCount: filteredRows.length,
       totalCount: allRows.length,
