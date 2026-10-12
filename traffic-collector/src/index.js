@@ -1072,8 +1072,6 @@ export default {
         const overall = combineGroupAnalyses(
           itsOverview ? [...groupSummaries, itsOverview] : groupSummaries
         );
-        const previousAnalysis = (await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json")) || {};
-
         const analysis = {
           fetchedAt,
           rowCycleId: cycleId,
@@ -1087,13 +1085,17 @@ export default {
           top10: overall.top10,
           busanStats: busanOverview.stats,
           busanTop10: busanOverview.top10,
-          suddenCongestion: previousAnalysis.suddenCongestion || {
+          // These are calculated in their own bounded Cron stages for this cycle.
+          suddenAnalysisComplete: false,
+          suddenCongestion: {
             detectedCount: 0,
             items: [],
             baselineSampleSize: BASELINE_SAMPLE_SIZE,
-            minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES
+            minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
+            mode: "same-timeband-baseline",
+            pending: true
           },
-          trafficBriefing: previousAnalysis.trafficBriefing || null,
+          trafficBriefing: null,
           updatedAt: new Date().toISOString()
         };
 
@@ -1193,12 +1195,14 @@ export default {
             baselineSampleSize: BASELINE_SAMPLE_SIZE,
             minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
             mode: "same-timeband-baseline",
+            pending: false,
             timeBand,
             thresholds: {
               minimumDropKmh: SUDDEN_CONGESTION_MIN_DROP_KMH,
               minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
             }
           };
+          analysis.suddenAnalysisComplete = true;
           analysis.updatedAt = new Date().toISOString();
           await env.TRAFFIC_CACHE.put(
             SNAPSHOT_ANALYSIS_KEY,
