@@ -4,6 +4,29 @@ import { loadTrafficSnapshot } from "../lib/trafficSnapshot.js";
 
 const SNAPSHOT_RESPONSE_TTL_SECONDS = 30;
 
+function getSnapshotUpdatedAt(snapshot) {
+  const candidates = snapshot?.snapshotType === "INCREMENTAL"
+    ? [
+        snapshot?.collection?.lastIncrementalUpdateAt,
+        snapshot?.fetchedAt,
+        snapshot?.updatedAt,
+        snapshot?.analysisUpdatedAt
+      ]
+    : [
+        snapshot?.collection?.completedAt,
+        snapshot?.fetchedAt,
+        snapshot?.analysisUpdatedAt,
+        snapshot?.updatedAt
+      ];
+
+  for (const value of candidates) {
+    if (typeof value !== "string") continue;
+    const candidate = value.trim();
+    if (candidate && Number.isFinite(Date.parse(candidate))) return candidate;
+  }
+  return new Date().toISOString();
+}
+
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -86,7 +109,7 @@ export async function onRequestGet(context) {
       data: sortedFiltered.slice(0, 100),
       filteredCount: filteredRows.length,
       totalCount: allRows.length,
-      updatedAt: snapshot.fetchedAt || new Date().toISOString(),
+      updatedAt: getSnapshotUpdatedAt(snapshot),
       analysisUpdatedAt: snapshot.analysisUpdatedAt || "",
       cache: "SNAPSHOT",
       warning: snapshot.warning || null,
