@@ -123,7 +123,7 @@ function evaluateTrafficStatus(speed, roadCategory = "URBAN_ROAD") {
   }
 }
 
-function calculateBusanAnalysis(rows) {
+function calculateBusanAnalysis(rows, includeTop10 = true) {
   let totalCount = 0;
   let totalSpeed = 0;
   let smoothCount = 0;
@@ -158,30 +158,32 @@ function calculateBusanAnalysis(rows) {
       slowestRow = row;
     }
 
-    const sectionKey = `${row.roadName}-${row.startName}-${row.endName}`;
-    const duplicateIndex = topCandidates.findIndex((candidate) => candidate.sectionKey === sectionKey);
-    if (duplicateIndex >= 0) {
-      const duplicate = topCandidates[duplicateIndex];
-      if (comparePriority(evaluation.status, speed, duplicate.status, duplicate.speed) >= 0) continue;
-      topCandidates.splice(duplicateIndex, 1);
-    }
+    if (includeTop10) {
+      const sectionKey = `${row.roadName}-${row.startName}-${row.endName}`;
+      const duplicateIndex = topCandidates.findIndex((candidate) => candidate.sectionKey === sectionKey);
+      if (duplicateIndex >= 0) {
+        const duplicate = topCandidates[duplicateIndex];
+        if (comparePriority(evaluation.status, speed, duplicate.status, duplicate.speed) >= 0) continue;
+        topCandidates.splice(duplicateIndex, 1);
+      }
 
-    let insertAt = topCandidates.findIndex((candidate) =>
-      comparePriority(evaluation.status, speed, candidate.status, candidate.speed) < 0
-    );
-    if (insertAt < 0) insertAt = topCandidates.length;
+      let insertAt = topCandidates.findIndex((candidate) =>
+        comparePriority(evaluation.status, speed, candidate.status, candidate.speed) < 0
+      );
+      if (insertAt < 0) insertAt = topCandidates.length;
 
-    if (insertAt < 10) {
-      topCandidates.splice(insertAt, 0, {
-        row,
-        sectionKey,
-        speed,
-        categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
-        status: evaluation.status,
-        statusText: evaluation.statusText,
-        statusColor: evaluation.color
-      });
-      if (topCandidates.length > 10) topCandidates.pop();
+      if (insertAt < 10) {
+        topCandidates.splice(insertAt, 0, {
+          row,
+          sectionKey,
+          speed,
+          categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
+          status: evaluation.status,
+          statusText: evaluation.statusText,
+          statusColor: evaluation.color
+        });
+        if (topCandidates.length > 10) topCandidates.pop();
+      }
     }
   }
 
@@ -235,7 +237,7 @@ function calculateBusanAnalysis(rows) {
     };
   }
 
-  const top10 = topCandidates.map((candidate, index) => ({
+  const top10 = includeTop10 ? topCandidates.map((candidate, index) => ({
     rank: index + 1,
     linkId: candidate.row.linkId,
     roadName: candidate.row.roadName || "도로명 없음",
@@ -247,13 +249,13 @@ function calculateBusanAnalysis(rows) {
     statusText: candidate.statusText,
     statusColor: candidate.statusColor,
     updatedAt: candidate.row.updatedAt || ""
-  }));
+  })) : [];
 
   return { stats, top10 };
 }
 
 function calculateBusanStats(rows) {
-  return calculateBusanAnalysis(rows).stats;
+  return calculateBusanAnalysis(rows, false).stats;
 }
 
 function calculateTop10(rows) {
@@ -921,20 +923,35 @@ export default {
         );
       }
 
+      const cycleComplete =
+        totalPages > 0 &&
+        completedPages.size >= totalPages &&
+        failedPages.size === 0;
+
       const mergedRows = new Map();
 
       for (const row of accumulator) {
+        // 전체 수집이 끝난 순간에는 이번 사이클에서 확인되지 않은 오래된 링크를 버린다.
+        if (cycleComplete && row?.__collectorCycleId !== cycleStartedAt) continue;
+
         const key = row.linkId
           ? `link:${row.linkId}`
           : `section:${row.roadName}|${row.sectionName}|${row.startName}|${row.endName}`;
-        mergedRows.set(key, row);
+
+        if (cycleComplete && row?.__collectorCycleId === cycleStartedAt) {
+          const cleanRow = { ...row };
+          delete cleanRow.__collectorCycleId;
+          mergedRows.set(key, cleanRow);
+        } else {
+          mergedRows.set(key, row);
+        }
       }
 
       for (const row of batchRows) {
         const key = getTrafficRowKey(row);
         // 모든 행에 이번 사이클에서 실제 확인했는지 표시한다.
         // 이전에는 9천여 개 링크 키를 collector-state에 매번 저장했다.
-        mergedRows.set(key, { ...row, __collectorCycleId: cycleStartedAt });
+        mergedRows.set(key, cycleComplete ? row : { ...row, __collectorCycleId: cycleStartedAt });
       }
 
       refreshedLinks += batchRows.length;
@@ -943,10 +960,6 @@ export default {
       const lastCollectedPage = completedPages.size > 0
         ? Math.max(...completedPages)
         : 0;
-      const cycleComplete =
-        totalPages > 0 &&
-        completedPages.size >= totalPages &&
-        failedPages.size === 0;
 
       console.log({
         event: "collector-progress",
@@ -1044,13 +1057,8 @@ export default {
       // 오래된 링크를 정리하고 완성 스냅샷으로 확정한다.
       const sourceParts = ["부산광역시 링크소통정보"];
       const warnings = [];
-      const rows = [];
-      for (const row of accumulator) {
-        if (row?.__collectorCycleId !== cycleStartedAt) continue;
-        const cleanRow = { ...row };
-        delete cleanRow.__collectorCycleId;
-        rows.push(cleanRow);
-      }
+      // cycleComplete 분기에서 최신 사이클에 포함된 행만 남기고 마커를 정리했다.
+      const rows = accumulator;
       const busanRowsForHistory = rows.slice();
 
       // 2. ITS 데이터 수집 (보조/광역)
