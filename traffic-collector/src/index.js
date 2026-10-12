@@ -328,6 +328,7 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "") {
       : {};
 
   const alerts = [];
+  let detectedCount = 0;
   const compareAlerts = (a, b) => {
     if (b.dropRatio !== a.dropRatio) return b.dropRatio - a.dropRatio;
     return b.dropKmh - a.dropKmh;
@@ -362,6 +363,7 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "") {
       dropRatio < SUDDEN_CONGESTION_MIN_DROP_RATIO * 100
     ) continue;
 
+    detectedCount += 1;
     const alert = {
       linkId: row.linkId || "",
       roadName: row.roadName || "도로명 없음",
@@ -420,7 +422,7 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "") {
   );
 
   return {
-    detectedCount: alerts.length,
+    detectedCount,
     items: alerts,
     baselineSampleSize: BASELINE_SAMPLE_SIZE,
     minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
