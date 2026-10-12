@@ -330,8 +330,7 @@ function combineGroupAnalyses(groupAnalyses) {
     congestedCount: 0,
     slowestRoad: null
   };
-  const topCandidates = [];
-  const seenSections = new Set();
+  const bestBySection = new Map();
 
   const compareRows = (a, b) => {
     if (a.status === "CONGESTED" && b.status !== "CONGESTED") return -1;
@@ -354,14 +353,17 @@ function combineGroupAnalyses(groupAnalyses) {
 
     for (const item of Array.isArray(analysis?.top10) ? analysis.top10 : []) {
       const sectionKey = `${item.roadName}-${item.startName}-${item.endName}`;
-      if (seenSections.has(sectionKey)) continue;
-      seenSections.add(sectionKey);
-      topCandidates.push(item);
+      const existing = bestBySection.get(sectionKey);
+      if (!existing || compareRows(item, existing) < 0) {
+        bestBySection.set(sectionKey, item);
+      }
     }
   }
 
-  topCandidates.sort(compareRows);
-  const top10 = topCandidates.slice(0, 10).map((item, index) => ({ ...item, rank: index + 1 }));
+  const top10 = Array.from(bestBySection.values())
+    .sort(compareRows)
+    .slice(0, 10)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
 
   return {
     stats: buildStatsFromAggregate(aggregate),
