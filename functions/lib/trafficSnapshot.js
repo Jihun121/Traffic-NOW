@@ -49,28 +49,31 @@ function mergeRows(baseRows, overlayRows) {
   return Array.from(byKey.values());
 }
 
-async function readCycleShards(env, cycleId) {
-  if (!cycleId) {
-    return Array.from({ length: ROW_GROUP_COUNT }, (_, groupId) => ({
-      cycleId: "",
-      groupId,
-      pages: {},
-      summary: null
-    }));
-  }
+function emptyRowShard(cycleId, groupId) {
+  return { cycleId: cycleId || "", groupId, pages: {}, summary: null };
+}
+
+async function readCycleShards(env, cycleId, groupIds = null) {
+  const ids = Array.isArray(groupIds)
+    ? [...new Set(groupIds)].filter((id) => Number.isInteger(id) && id >= 0 && id < ROW_GROUP_COUNT)
+    : Array.from({ length: ROW_GROUP_COUNT }, (_, index) => index);
+  const result = Array.from({ length: ROW_GROUP_COUNT }, (_, groupId) => emptyRowShard(cycleId, groupId));
+  if (!cycleId || ids.length === 0) return result;
 
   const raw = await Promise.all(
-    Array.from({ length: ROW_GROUP_COUNT }, (_, groupId) =>
+    ids.map((groupId) =>
       env.TRAFFIC_CACHE.get(getCycleRowShardKey(cycleId, groupId), "json")
     )
   );
 
-  return raw.map((shard, groupId) => {
-    if (!shard || shard.cycleId !== cycleId) {
-      return { cycleId, groupId, pages: {}, summary: null };
+  ids.forEach((groupId, index) => {
+    const shard = raw[index];
+    if (shard && shard.cycleId === cycleId && shard.pages && typeof shard.pages === "object") {
+      result[groupId] = shard;
     }
-    return shard;
   });
+
+  return result;
 }
 
 function mergeShardPages(baseShard, overlayShard, cycleId, groupId) {
@@ -233,7 +236,57 @@ export async function loadTrafficSnapshot(env) {
   let summaryList = [];
   let activeShards = null;
 
-  if (state.activeCycleId) {
+  const isIncremental = Boolean(state.inProgress && state.currentCycleId);
+  if (isIncremental && state.activeCycleId) {
+    // Read the current overlay first. When a group has every source page, its old
+    // active shard is unnecessary; avoiding that read halves JSON parsing near cycle end.
+    const currentShards = await readCycleShards(env, String(state.currentCycleId));
+    const completedPages = new Set(
+      Array.isArray(state.completedPages) ? state.completedPages.map(Number) : []
+    );
+    const totalPages = Number(state.totalPages || 0);
+    const activeGroupIds = [];
+
+    for (let groupId = 0; groupId < ROW_GROUP_COUNT; groupId += 1) {
+      const firstPage = groupId * 10 + 1;
+      const lastPage = totalPages > 0 ? Math.min(firstPage + 9, totalPages) : firstPage + 9;
+      let groupComplete = totalPages > 0 && lastPage >= firstPage;
+      for (let page = firstPage; groupComplete && page <= lastPage; page += 1) {
+        if (!completedPages.has(page)) groupComplete = false;
+      }
+      if (!groupComplete) activeGroupIds.push(groupId);
+    }
+
+    activeShards = await readCycleShards(env, String(state.activeCycleId), activeGroupIds);
+    rows = [];
+    summaryList = [];
+
+    for (let groupId = 0; groupId < ROW_GROUP_COUNT; groupId += 1) {
+      const baseShard = activeShards[groupId];
+      const overlayShard = currentShards[groupId];
+      const hasOverlay = Object.keys(overlayShard.pages || {}).length > 0;
+      const firstPage = groupId * 10 + 1;
+      const lastPage = totalPages > 0 ? Math.min(firstPage + 9, totalPages) : firstPage + 9;
+      let groupComplete = totalPages > 0 && lastPage >= firstPage;
+      for (let page = firstPage; groupComplete && page <= lastPage; page += 1) {
+        if (!completedPages.has(page)) groupComplete = false;
+      }
+
+      const mergedShard = groupComplete
+        ? overlayShard
+        : mergeShardPages(baseShard, overlayShard, String(state.activeCycleId), groupId);
+      const groupRows = rowsFromShard(mergedShard);
+      rows.push(...groupRows);
+
+      if (groupComplete && overlayShard.summary) {
+        summaryList.push(overlayShard.summary);
+      } else if (hasOverlay) {
+        summaryList.push(calculateBusanTrafficOverview(groupRows));
+      } else if (baseShard.summary) {
+        summaryList.push(baseShard.summary);
+      }
+    }
+  } else if (state.activeCycleId) {
     activeShards = await readCycleShards(env, String(state.activeCycleId));
     rows = flattenPageShards(activeShards);
     summaryList = activeShards.map((shard) => shard.summary).filter(Boolean);
@@ -244,31 +297,20 @@ export async function loadTrafficSnapshot(env) {
     rows = Array.isArray(legacySnapshot?.rows) ? legacySnapshot.rows : [];
   }
 
-  const isIncremental = Boolean(state.inProgress && state.currentCycleId);
-  if (isIncremental) {
+  if (isIncremental && !state.activeCycleId) {
+    // Bootstrap from legacy: apply new pages over the last complete dataset.
     const currentShards = await readCycleShards(env, String(state.currentCycleId));
     const overlayRows = flattenPageShards(currentShards);
+    const completedPages = Array.isArray(state.completedPages) ? state.completedPages.length : 0;
+    const totalPages = Number(state.totalPages || 0);
+    const nearCycleEnd = totalPages > 0 && totalPages - completedPages <= PAGES_PER_RUN;
 
-    if (state.activeCycleId && activeShards) {
-      // Once a sharded COMPLETE cycle exists, replace whole page arrays for updated groups.
-      rows = [];
-      summaryList = [];
-      for (let groupId = 0; groupId < ROW_GROUP_COUNT; groupId += 1) {
-        const baseShard = activeShards[groupId];
-        const overlayShard = currentShards[groupId];
-        const mergedShard = mergeShardPages(baseShard, overlayShard, String(state.activeCycleId), groupId);
-        const groupRows = rowsFromShard(mergedShard);
-        rows.push(...groupRows);
-
-        if (overlayShard && Object.keys(overlayShard.pages || {}).length > 0) {
-          const groupOverview = calculateBusanTrafficOverview(groupRows);
-          summaryList.push(groupOverview);
-        } else if (baseShard?.summary) {
-          summaryList.push(baseShard.summary);
-        }
-      }
+    if (nearCycleEnd && overlayRows.length > 0) {
+      // The last batch is about to become the active dataset; avoid deserializing/merging
+      // the full legacy snapshot and thousands of newly refreshed rows for one response.
+      rows = overlayRows;
+      summaryList = currentShards.map((shard) => shard.summary).filter(Boolean);
     } else {
-      // One-time migration/bootstrap: preserve old snapshot until the first sharded cycle completes.
       rows = mergeRows(rows, overlayRows);
     }
   }
@@ -297,9 +339,13 @@ export async function loadTrafficSnapshot(env) {
       summaryList.push(itsOverview);
     }
     overview = combineTrafficSummaries(summaryList);
-  } else if (isIncremental) {
-    // During the one-time transition from legacy storage, retain its already computed overview.
-    if (legacySnapshot?.stats && Array.isArray(legacySnapshot?.top10)) {
+  } else if (isIncremental && !state.activeCycleId) {
+    const completedPages = Array.isArray(state.completedPages) ? state.completedPages.length : 0;
+    const totalPages = Number(state.totalPages || 0);
+    const nearCycleEnd = totalPages > 0 && totalPages - completedPages <= PAGES_PER_RUN;
+    if (nearCycleEnd && summaryList.length) {
+      overview = combineTrafficSummaries(summaryList);
+    } else if (legacySnapshot?.stats && Array.isArray(legacySnapshot?.top10)) {
       overview = { stats: legacySnapshot.stats, top10: legacySnapshot.top10 };
     } else {
       overview = calculateBusanTrafficOverview(rows);
