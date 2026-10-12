@@ -17,8 +17,10 @@ const HISTORY_RETENTION_DAYS = 14;
 const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
 const HISTORY_MAX_ENTRIES = 96;
 // 시간대별 기준값을 별도 KV에 저장해 한 번의 실행에서 전체 시간대 데이터를 재직렬화하지 않는다.
-const BASELINE_KEY_PREFIX = "traffic:busan:baseline-by-timeband:v3:";
-const BASELINE_VERSION = 3;
+const BASELINE_KEY_PREFIX = "traffic:busan:baseline-by-timeband:v4:";
+const BASELINE_VERSION = 4;
+const BASELINE_SHARD_COUNT = 12;
+const BASELINE_SHARDS_PER_RUN = 4;
 const BASELINE_SAMPLE_SIZE = 6;
 const SUDDEN_CONGESTION_MIN_SAMPLES = 3;
 const SUDDEN_CONGESTION_MIN_DROP_KMH = 10;
@@ -269,6 +271,26 @@ function getTrafficRowKey(row) {
   return `section:${row.roadName || ""}|${row.sectionName || ""}|${row.startName || ""}|${row.endName || ""}`;
 }
 
+function getBaselineShardIndex(row) {
+  const value = String(row?.linkId || getTrafficRowKey(row));
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % BASELINE_SHARD_COUNT;
+}
+
+function mergeSuddenCongestionAlerts(existing, incoming) {
+  const compare = (a, b) => {
+    if (b.dropRatio !== a.dropRatio) return b.dropRatio - a.dropRatio;
+    return b.dropKmh - a.dropKmh;
+  };
+  return [...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])]
+    .sort(compare)
+    .slice(0, SUDDEN_CONGESTION_MAX_RESULTS);
+}
+
 function getKoreaHour(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Seoul",
@@ -309,12 +331,11 @@ function median(values) {
     : Number(sorted[middle].toFixed(1));
 }
 
-async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "") {
+async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "", timeBandOverride = null, shardId = 0) {
   const now = new Date();
   const stableSampleId = String(sampleId || now.toISOString());
-  const koreaHour = getKoreaHour(now);
-  const timeBand = getTimeBand(koreaHour);
-  const baselineKey = BASELINE_KEY_PREFIX + timeBand.key;
+  const timeBand = timeBandOverride || getTimeBand(getKoreaHour(now));
+  const baselineKey = BASELINE_KEY_PREFIX + timeBand.key + ":shard-" + shardId;
 
   // 이전에는 8개 시간대의 모든 기준값을 한 KV 객체에 담아 매번 전부 읽고 썼다.
   // 현재 시간대의 기준값만 읽고 갱신한다. v2 단일 객체는 사용하지 않고 새 기준을 쌓는다.
