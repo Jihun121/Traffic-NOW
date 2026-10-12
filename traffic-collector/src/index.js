@@ -1110,9 +1110,10 @@ async function runPostprocessing(env, itsApiKey) {
       { expirationTtl: LATEST_SNAPSHOT_TTL }
     );
 
+    const storagePages = Number(analysis.rowShardPages || LEGACY_ROW_SHARD_PAGES);
     const groupSummaries = await Promise.all(
       Array.from({ length: ROW_GROUP_COUNT }, async (_, groupId) =>
-        (await readCycleGroupSummary(env, cycleId, groupId)) || calculateBusanAnalysis([])
+        (await readCycleGroupSummary(env, cycleId, groupId, storagePages)) || calculateBusanAnalysis([])
       )
     );
     const busanOverview = combineGroupAnalyses(groupSummaries);
