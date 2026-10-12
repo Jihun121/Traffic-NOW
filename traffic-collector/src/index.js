@@ -3,6 +3,7 @@ import { normalizeTrafficPayload } from "../../functions/lib/normalizeTraffic.js
 const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
 const SNAPSHOT_KEY = "traffic:busan:latest";
+const SNAPSHOT_ANALYSIS_KEY = "traffic:busan:latest-analysis";
 const COLLECTOR_STATE_KEY = "traffic:busan:collector-state";
 const COLLECTOR_ACCUMULATOR_KEY = "traffic:busan:collector-accumulator";
 const PAGE_SIZE = 100;
@@ -308,8 +309,9 @@ function median(values) {
     : Number(sorted[middle].toFixed(1));
 }
 
-async function calculateAndUpdateSuddenCongestion(env, rows) {
+async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "") {
   const now = new Date();
+  const stableSampleId = String(sampleId || now.toISOString());
   const koreaHour = getKoreaHour(now);
   const timeBand = getTimeBand(koreaHour);
   const baselineKey = BASELINE_KEY_PREFIX + timeBand.key;
@@ -338,9 +340,13 @@ async function calculateAndUpdateSuddenCongestion(env, rows) {
 
     const key = getTrafficRowKey(row);
     const previous = currentBucket[key];
-    const samples = Array.isArray(previous?.samples)
+    const storedSamples = Array.isArray(previous?.samples)
       ? previous.samples.map(Number).filter(Number.isFinite).slice(-BASELINE_SAMPLE_SIZE)
       : [];
+    // 동일한 COMPLETE 스냅샷을 재시도할 때 이미 추가된 마지막 표본은 비교 기준에서 제외한다.
+    const samples = previous?.lastSampleId === stableSampleId
+      ? storedSamples.slice(0, -1)
+      : storedSamples;
 
     if (samples.length < SUDDEN_CONGESTION_MIN_SAMPLES) continue;
 
@@ -384,14 +390,18 @@ async function calculateAndUpdateSuddenCongestion(env, rows) {
     if (!Number.isFinite(speed) || speed < 0) continue;
 
     const key = getTrafficRowKey(row);
-    const previousSamples = Array.isArray(nextBucket[key]?.samples)
-      ? nextBucket[key].samples.map(Number).filter(Number.isFinite).slice(-BASELINE_SAMPLE_SIZE + 1)
+    const previousEntry = nextBucket[key];
+    if (previousEntry?.lastSampleId === stableSampleId) continue;
+
+    const previousSamples = Array.isArray(previousEntry?.samples)
+      ? previousEntry.samples.map(Number).filter(Number.isFinite).slice(-BASELINE_SAMPLE_SIZE + 1)
       : [];
 
     nextBucket[key] = {
       linkId: row.linkId || "",
       roadName: row.roadName || "",
       samples: [...previousSamples, speed],
+      lastSampleId: stableSampleId,
       updatedAt
     };
   }
@@ -721,14 +731,139 @@ export default {
       const previousSnapshot =
         (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
 
-      // 완성 스냅샷 저장 후 이력 보관만 실패한 경우, 새 수집을 시작하기 전에 이 작업을 재시도한다.
+      // Briefing 단계에는 latest의 대형 rows 배열이 필요하지 않으므로 작은 분석 키만 사용한다.
+      if (incrementalCollectorEnabled && state?.phase === "briefing-pending") {
+        const analysis = await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
+        if (!analysis || analysis.fetchedAt !== state?.pendingSnapshotFetchedAt || !analysis.suddenCongestion) {
+          throw new Error("TRAFFIC_BRIEFING_PENDING_ANALYSIS_MISSING");
+        }
+
+        if (!analysis.trafficBriefing) {
+          const historyIndex = (await env.TRAFFIC_CACHE.get(HISTORY_INDEX_KEY, "json")) || [];
+          const previousHistoryEntry = Array.isArray(historyIndex)
+            ? historyIndex
+                .filter((entry) => Number.isFinite(Date.parse(entry?.fetchedAt || "")))
+                .sort((a, b) => Date.parse(b.fetchedAt) - Date.parse(a.fetchedAt))[0]
+            : null;
+
+          analysis.trafficBriefing = buildTrafficBriefing(
+            analysis.stats,
+            previousHistoryEntry,
+            analysis.suddenCongestion,
+            analysis.top10
+          );
+          analysis.updatedAt = new Date().toISOString();
+          await env.TRAFFIC_CACHE.put(
+            SNAPSHOT_ANALYSIS_KEY,
+            JSON.stringify(analysis),
+            { expirationTtl: LATEST_SNAPSHOT_TTL }
+          );
+        }
+
+        await env.TRAFFIC_CACHE.put(
+          COLLECTOR_STATE_KEY,
+          JSON.stringify({
+            collectorVersion: 3,
+            inProgress: false,
+            phase: "history-pending",
+            currentPage: 1,
+            totalPages: Number(analysis.totalPages || 0),
+            reportedTotalCount: Number(analysis.reportedTotalCount || 0),
+            pendingSnapshotFetchedAt: analysis.fetchedAt,
+            completedPages: [],
+            failedPages: [],
+            cycleStartedAt: null,
+            refreshedLinks: 0,
+            updatedAt: new Date().toISOString()
+          }),
+          { expirationTtl: COLLECTION_TTL }
+        );
+        console.log({
+          event: "collector-briefing-complete",
+          fetchedAt: analysis.fetchedAt,
+          trend: analysis.trafficBriefing?.trend || null
+        });
+        return;
+      }
+
+      const previousSnapshot =
+        (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
+
+      // 새 스냅샷의 교통 분석은 별도 Cron 단계로 분리한다.
+      if (incrementalCollectorEnabled && state?.phase === "sudden-pending") {
+        if (!previousSnapshot || !Array.isArray(previousSnapshot.rows)) {
+          throw new Error("TRAFFIC_SUDDEN_PENDING_SNAPSHOT_MISSING");
+        }
+        if (previousSnapshot.fetchedAt !== state?.pendingSnapshotFetchedAt) {
+          throw new Error("TRAFFIC_SUDDEN_PENDING_SNAPSHOT_MISMATCH");
+        }
+
+        let analysis = await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
+        if (analysis?.fetchedAt !== previousSnapshot.fetchedAt || !analysis.suddenCongestion) {
+          const suddenCongestion = await calculateAndUpdateSuddenCongestion(
+            env,
+            previousSnapshot.rows,
+            previousSnapshot.fetchedAt
+          );
+          analysis = {
+            fetchedAt: previousSnapshot.fetchedAt,
+            totalPages: Number(previousSnapshot.collection?.totalPages || 0),
+            reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
+            stats: previousSnapshot.stats || null,
+            top10: Array.isArray(previousSnapshot.top10) ? previousSnapshot.top10 : [],
+            suddenCongestion,
+            trafficBriefing: null,
+            updatedAt: new Date().toISOString()
+          };
+          // 분석 결과를 먼저 저장한다. 이후 단계 재시도에서 baseline 표본을 중복 추가하지 않는다.
+          await env.TRAFFIC_CACHE.put(
+            SNAPSHOT_ANALYSIS_KEY,
+            JSON.stringify(analysis),
+            { expirationTtl: LATEST_SNAPSHOT_TTL }
+          );
+        }
+
+        await env.TRAFFIC_CACHE.put(
+          COLLECTOR_STATE_KEY,
+          JSON.stringify({
+            collectorVersion: 3,
+            inProgress: false,
+            phase: "briefing-pending",
+            currentPage: 1,
+            totalPages: Number(previousSnapshot.collection?.totalPages || 0),
+            reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
+            pendingSnapshotFetchedAt: previousSnapshot.fetchedAt,
+            completedPages: [],
+            failedPages: [],
+            cycleStartedAt: null,
+            refreshedLinks: 0,
+            updatedAt: new Date().toISOString()
+          }),
+          { expirationTtl: COLLECTION_TTL }
+        );
+        console.log({
+          event: "collector-sudden-analysis-complete",
+          fetchedAt: analysis.fetchedAt,
+          detectedCount: analysis.suddenCongestion?.detectedCount || 0
+        });
+        return;
+      }
+
+      // 이력 저장 실패는 별도 실행에서 재시도해 수집 상태를 손상시키지 않는다.
       if (incrementalCollectorEnabled && state?.phase === "history-pending") {
         if (!previousSnapshot || !Array.isArray(previousSnapshot.rows)) {
           throw new Error("TRAFFIC_HISTORY_PENDING_SNAPSHOT_MISSING");
         }
-
-        const busanRows = previousSnapshot.rows.filter((row) => row?.source !== "ITS");
-        const historyResult = await archiveHistoricalSnapshot(env, previousSnapshot, busanRows);
+        const analysis = await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
+        const historySnapshot = analysis?.fetchedAt === previousSnapshot.fetchedAt
+          ? {
+              ...previousSnapshot,
+              suddenCongestion: analysis.suddenCongestion || previousSnapshot.suddenCongestion,
+              trafficBriefing: analysis.trafficBriefing || previousSnapshot.trafficBriefing
+            }
+          : previousSnapshot;
+        const busanRows = historySnapshot.rows.filter((row) => row?.source !== "ITS");
+        const historyResult = await archiveHistoricalSnapshot(env, historySnapshot, busanRows);
         await env.TRAFFIC_CACHE.delete(COLLECTOR_ACCUMULATOR_KEY);
         await env.TRAFFIC_CACHE.put(
           COLLECTOR_STATE_KEY,
@@ -737,14 +872,14 @@ export default {
             inProgress: false,
             phase: null,
             currentPage: 1,
-            totalPages: Number(previousSnapshot.collection?.totalPages || 0),
-            reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
+            totalPages: Number(historySnapshot.collection?.totalPages || 0),
+            reportedTotalCount: Number(historySnapshot.collection?.reportedTotalCount || 0),
             completedPages: [],
             failedPages: [],
             cycleStartedAt: null,
             refreshedLinks: 0,
             updatedAt: new Date().toISOString(),
-            lastCompletedAt: previousSnapshot.fetchedAt || new Date().toISOString()
+            lastCompletedAt: historySnapshot.fetchedAt || new Date().toISOString()
           }),
           { expirationTtl: COLLECTION_TTL }
         );
@@ -1077,7 +1212,9 @@ export default {
       const stats = completeAnalysis.stats;
       const top10 = completeAnalysis.top10;
 
-      let suddenCongestion = {
+      // 급격한 정체 분석과 브리핑은 별도 Cron 단계에서 계산한다.
+      // COMPLETE 스냅샷 생성과 대규모 baseline 처리를 한 invocation에 겹치지 않는다.
+      const suddenCongestion = previousSnapshot?.suddenCongestion || {
         detectedCount: 0,
         items: [],
         baselineSampleSize: BASELINE_SAMPLE_SIZE,
@@ -1087,35 +1224,7 @@ export default {
           minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
         }
       };
-
-      try {
-        suddenCongestion = await calculateAndUpdateSuddenCongestion(env, accumulator);
-        console.log({
-          event: "collector-sudden-congestion-analysis",
-          detectedCount: suddenCongestion.detectedCount,
-          topRoad: suddenCongestion.items[0]?.roadName || null
-        });
-      } catch (analysisError) {
-        console.warn({
-          event: "collector-sudden-congestion-analysis-failed",
-          error: analysisError?.message || String(analysisError)
-        });
-      }
-
-      const existingHistoryIndex =
-        (await env.TRAFFIC_CACHE.get(HISTORY_INDEX_KEY, "json")) || [];
-      const previousHistoryEntry = Array.isArray(existingHistoryIndex)
-        ? existingHistoryIndex
-            .filter((entry) => Number.isFinite(Date.parse(entry?.fetchedAt || "")))
-            .sort((a, b) => Date.parse(b.fetchedAt) - Date.parse(a.fetchedAt))[0]
-        : null;
-
-      const trafficBriefing = buildTrafficBriefing(
-        stats,
-        previousHistoryEntry,
-        suddenCongestion,
-        top10
-      );
+      const trafficBriefing = previousSnapshot?.trafficBriefing || null;
 
       const snapshot = {
         snapshotType: "COMPLETE",
@@ -1153,16 +1262,17 @@ export default {
         expirationTtl: LATEST_SNAPSHOT_TTL
       });
 
-      // COMPLETE 스냅샷이 저장된 뒤 CPU 제한으로 이력 저장이 중단돼도 수집 상태를 보호한다.
+      // COMPLETE 스냅샷은 이 시점에서 확정한다. 이후 분석/이력 처리는 별도 Cron 실행이다.
       await env.TRAFFIC_CACHE.put(
         COLLECTOR_STATE_KEY,
         JSON.stringify({
           collectorVersion: 3,
           inProgress: false,
-          phase: "history-pending",
+          phase: "sudden-pending",
           currentPage: 1,
           totalPages,
           reportedTotalCount,
+          pendingSnapshotFetchedAt: snapshot.fetchedAt,
           completedPages: [],
           failedPages: [],
           cycleStartedAt: null,
@@ -1173,63 +1283,17 @@ export default {
         { expirationTtl: COLLECTION_TTL }
       );
 
-      let historyArchived = false;
-      try {
-        const historyResult = await archiveHistoricalSnapshot(env, snapshot, busanRowsForHistory);
-        historyArchived = true;
-        console.log({
-          event: "collector-history-write-success",
-          historyKey: historyResult.historyKey,
-          historyEntries: historyResult.historyEntries,
-          historyRows: historyResult.historyRows
-        });
-      } catch (historyError) {
-        console.warn({
-          event: "collector-history-write-failed",
-          error: historyError?.message || String(historyError)
-        });
-      }
-
-      if (historyArchived) {
-        await env.TRAFFIC_CACHE.delete(COLLECTOR_ACCUMULATOR_KEY);
-        await env.TRAFFIC_CACHE.put(
-          COLLECTOR_STATE_KEY,
-          JSON.stringify({
-            collectorVersion: 3,
-            inProgress: false,
-            phase: null,
-            currentPage: 1,
-            totalPages,
-            reportedTotalCount,
-            completedPages: [],
-            failedPages: [],
-            cycleStartedAt: null,
-            refreshedLinks: 0,
-            updatedAt: new Date().toISOString(),
-            lastCompletedAt: snapshot.fetchedAt
-          }),
-          { expirationTtl: COLLECTION_TTL }
-        );
-      } else {
-        console.warn({
-          event: "collector-history-pending",
-          fetchedAt: snapshot.fetchedAt,
-          message: "이력 저장을 다음 Cron 실행에서 재시도합니다."
-        });
-      }
-
       console.log({
-        event: "collector-kv-write-success",
+        event: "collector-cycle-snapshot-saved",
+        fetchedAt: snapshot.fetchedAt,
         totalRows: rows.length,
         avgSpeed: stats.averageSpeed,
         congestedRatio: stats.statusRatios.congested,
-        source: snapshot.source,
-        warning: snapshot.warning,
-        busanReportedTotalCount: reportedTotalCount,
-        totalPages,
-        durationMs: Date.now() - startedAt,
-        historyRetentionDays: HISTORY_RETENTION_DAYS
+        phase: "sudden-pending"
       });
+      return;
+
+
     } catch (error) {
       console.error({ event: "collector-failed", error: error?.message || error });
       throw error;
