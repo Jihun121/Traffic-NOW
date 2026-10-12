@@ -813,7 +813,7 @@ export default {
       previousSnapshot =
         (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
 
-      // 새 스냅샷의 교통 분석은 별도 Cron 단계로 분리한다.
+      // 급격한 정체 기준 갱신은 12개 shard로 나눠 4개씩 처리해 CPU/직렬화량을 제한한다.
       if (incrementalCollectorEnabled && state?.phase === "sudden-pending") {
         if (!previousSnapshot || !Array.isArray(previousSnapshot.rows)) {
           throw new Error("TRAFFIC_SUDDEN_PENDING_SNAPSHOT_MISSING");
@@ -823,53 +823,140 @@ export default {
         }
 
         let analysis = await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
-        if (analysis?.fetchedAt !== previousSnapshot.fetchedAt || !analysis.suddenCongestion) {
-          const suddenCongestion = await calculateAndUpdateSuddenCongestion(
-            env,
-            previousSnapshot.rows,
-            previousSnapshot.fetchedAt
+        if (analysis?.fetchedAt === previousSnapshot.fetchedAt && analysis.suddenCongestion) {
+          await env.TRAFFIC_CACHE.put(
+            COLLECTOR_STATE_KEY,
+            JSON.stringify({
+              collectorVersion: 3,
+              inProgress: false,
+              phase: "briefing-pending",
+              currentPage: 1,
+              totalPages: Number(previousSnapshot.collection?.totalPages || 0),
+              reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
+              pendingSnapshotFetchedAt: previousSnapshot.fetchedAt,
+              completedPages: [],
+              failedPages: [],
+              cycleStartedAt: null,
+              refreshedLinks: 0,
+              updatedAt: new Date().toISOString()
+            }),
+            { expirationTtl: COLLECTION_TTL }
           );
+          return;
+        }
+
+        const cursor = Math.max(
+          0,
+          Math.min(BASELINE_SHARD_COUNT, Number(state?.baselineShardCursor || 0))
+        );
+        const shardIds = [];
+        for (
+          let shardId = cursor;
+          shardId < Math.min(BASELINE_SHARD_COUNT, cursor + BASELINE_SHARDS_PER_RUN);
+          shardId += 1
+        ) {
+          shardIds.push(shardId);
+        }
+
+        const targetShards = new Set(shardIds);
+        const rowsByShard = new Map(shardIds.map((shardId) => [shardId, []]));
+        for (const row of previousSnapshot.rows) {
+          if (row?.source === "ITS") continue;
+          const shardId = getBaselineShardIndex(row);
+          if (targetShards.has(shardId)) rowsByShard.get(shardId).push(row);
+        }
+
+        const timeBand = state?.pendingTimeBand ||
+          getTimeBand(getKoreaHour(new Date(previousSnapshot.fetchedAt)));
+        let pendingAlerts = Array.isArray(state?.pendingAlerts) ? state.pendingAlerts : [];
+        let pendingDetectedCount = Number(state?.pendingDetectedCount || 0);
+
+        for (const shardId of shardIds) {
+          const shardResult = await calculateAndUpdateSuddenCongestion(
+            env,
+            rowsByShard.get(shardId),
+            previousSnapshot.fetchedAt,
+            timeBand,
+            shardId
+          );
+          pendingDetectedCount += Number(shardResult.detectedCount || 0);
+          pendingAlerts = mergeSuddenCongestionAlerts(pendingAlerts, shardResult.items);
+        }
+
+        const nextCursor = cursor + shardIds.length;
+        const stateBase = {
+          collectorVersion: 3,
+          inProgress: false,
+          currentPage: 1,
+          totalPages: Number(previousSnapshot.collection?.totalPages || 0),
+          reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
+          pendingSnapshotFetchedAt: previousSnapshot.fetchedAt,
+          completedPages: [],
+          failedPages: [],
+          cycleStartedAt: null,
+          refreshedLinks: 0,
+          updatedAt: new Date().toISOString()
+        };
+
+        if (nextCursor >= BASELINE_SHARD_COUNT) {
           analysis = {
             fetchedAt: previousSnapshot.fetchedAt,
-            totalPages: Number(previousSnapshot.collection?.totalPages || 0),
-            reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
+            totalPages: stateBase.totalPages,
+            reportedTotalCount: stateBase.reportedTotalCount,
             stats: previousSnapshot.stats || null,
             top10: Array.isArray(previousSnapshot.top10) ? previousSnapshot.top10 : [],
-            suddenCongestion,
+            suddenCongestion: {
+              detectedCount: pendingDetectedCount,
+              items: pendingAlerts,
+              baselineSampleSize: BASELINE_SAMPLE_SIZE,
+              minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
+              mode: "same-timeband-baseline",
+              timeBand,
+              thresholds: {
+                minimumDropKmh: SUDDEN_CONGESTION_MIN_DROP_KMH,
+                minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
+              }
+            },
             trafficBriefing: null,
             updatedAt: new Date().toISOString()
           };
-          // 분석 결과를 먼저 저장한다. 이후 단계 재시도에서 baseline 표본을 중복 추가하지 않는다.
           await env.TRAFFIC_CACHE.put(
             SNAPSHOT_ANALYSIS_KEY,
             JSON.stringify(analysis),
             { expirationTtl: LATEST_SNAPSHOT_TTL }
           );
+          await env.TRAFFIC_CACHE.put(
+            COLLECTOR_STATE_KEY,
+            JSON.stringify({ ...stateBase, phase: "briefing-pending" }),
+            { expirationTtl: COLLECTION_TTL }
+          );
+          console.log({
+            event: "collector-sudden-analysis-complete",
+            fetchedAt: analysis.fetchedAt,
+            baselineShards: BASELINE_SHARD_COUNT,
+            detectedCount: pendingDetectedCount
+          });
+        } else {
+          await env.TRAFFIC_CACHE.put(
+            COLLECTOR_STATE_KEY,
+            JSON.stringify({
+              ...stateBase,
+              phase: "sudden-pending",
+              baselineShardCursor: nextCursor,
+              pendingTimeBand: timeBand,
+              pendingAlerts,
+              pendingDetectedCount
+            }),
+            { expirationTtl: COLLECTION_TTL }
+          );
+          console.log({
+            event: "collector-sudden-analysis-progress",
+            fetchedAt: previousSnapshot.fetchedAt,
+            completedShards: nextCursor,
+            totalShards: BASELINE_SHARD_COUNT,
+            detectedCountSoFar: pendingDetectedCount
+          });
         }
-
-        await env.TRAFFIC_CACHE.put(
-          COLLECTOR_STATE_KEY,
-          JSON.stringify({
-            collectorVersion: 3,
-            inProgress: false,
-            phase: "briefing-pending",
-            currentPage: 1,
-            totalPages: Number(previousSnapshot.collection?.totalPages || 0),
-            reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
-            pendingSnapshotFetchedAt: previousSnapshot.fetchedAt,
-            completedPages: [],
-            failedPages: [],
-            cycleStartedAt: null,
-            refreshedLinks: 0,
-            updatedAt: new Date().toISOString()
-          }),
-          { expirationTtl: COLLECTION_TTL }
-        );
-        console.log({
-          event: "collector-sudden-analysis-complete",
-          fetchedAt: analysis.fetchedAt,
-          detectedCount: analysis.suddenCongestion?.detectedCount || 0
-        });
         return;
       }
 
