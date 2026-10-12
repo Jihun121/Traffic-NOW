@@ -231,6 +231,130 @@ export function getCongestionTop10(rows) {
 }
 
 /**
+ * 부산 전체 통계와 정체 TOP 10을 단일 순회로 산출한다.
+ * 부분 수집 중에는 이전 COMPLETE 통계 대신 현재 base+overlay 행으로 지표를 계산한다.
+ */
+export function calculateBusanTrafficOverview(rows) {
+  let totalCount = 0;
+  let totalSpeed = 0;
+  let smoothCount = 0;
+  let slowCount = 0;
+  let congestedCount = 0;
+  let slowestRow = null;
+  let slowestSpeed = Infinity;
+  const topCandidates = [];
+
+  const compare = (a, b) => {
+    if (a.status === "CONGESTED" && b.status !== "CONGESTED") return -1;
+    if (a.status !== "CONGESTED" && b.status === "CONGESTED") return 1;
+    return Number(a.speed) - Number(b.speed);
+  };
+
+  for (const row of rows) {
+    const speed = Number(row.speed);
+    if (!Number.isFinite(speed) || speed < 0) continue;
+
+    totalCount += 1;
+    totalSpeed += speed;
+    const category = row.category || getRoadCategory(row.roadName);
+    const evaluation = evaluateTrafficStatus(speed, category);
+
+    if (evaluation.status === "SMOOTH") smoothCount += 1;
+    else if (evaluation.status === "SLOW") slowCount += 1;
+    else if (evaluation.status === "CONGESTED") congestedCount += 1;
+
+    if (speed < slowestSpeed) {
+      slowestSpeed = speed;
+      slowestRow = row;
+    }
+
+    const item = {
+      rank: 0,
+      linkId: row.linkId || "",
+      roadName: row.roadName || "도로명 없음",
+      sectionName: row.sectionName || "",
+      startName: row.startName || "-",
+      endName: row.endName || "-",
+      speed,
+      category,
+      categoryName: evaluation.categoryName,
+      status: evaluation.status,
+      statusText: evaluation.statusText,
+      statusColor: evaluation.color,
+      updatedAt: row.updatedAt || ""
+    };
+    const sectionKey = `${item.roadName}-${item.startName}-${item.endName}`;
+    const duplicateIndex = topCandidates.findIndex((candidate) =>
+      `${candidate.roadName}-${candidate.startName}-${candidate.endName}` === sectionKey
+    );
+    if (duplicateIndex >= 0) {
+      if (compare(item, topCandidates[duplicateIndex]) >= 0) continue;
+      topCandidates.splice(duplicateIndex, 1);
+    }
+
+    let insertAt = topCandidates.findIndex((candidate) => compare(item, candidate) < 0);
+    if (insertAt < 0) insertAt = topCandidates.length;
+    if (insertAt < 10) {
+      topCandidates.splice(insertAt, 0, item);
+      if (topCandidates.length > 10) topCandidates.pop();
+    }
+  }
+
+  if (totalCount === 0) {
+    return {
+      stats: {
+        totalCount: 0,
+        averageSpeed: 0,
+        trafficIndex: 0,
+        trafficIndexGrade: "데이터 없음",
+        statusCounts: { smooth: 0, slow: 0, congested: 0 },
+        statusRatios: { smooth: 0, slow: 0, congested: 0 },
+        congestionLevel: "데이터 없음",
+        slowestRoad: null
+      },
+      top10: []
+    };
+  }
+
+  const averageSpeed = Number((totalSpeed / totalCount).toFixed(1));
+  const smoothRatio = Number(((smoothCount / totalCount) * 100).toFixed(1));
+  const slowRatio = Number(((slowCount / totalCount) * 100).toFixed(1));
+  const congestedRatio = Number(((congestedCount / totalCount) * 100).toFixed(1));
+  const trafficIndex = Number(Math.max(0, Math.min(100, smoothRatio + slowRatio * 0.5)).toFixed(1));
+
+  let trafficIndexGrade = "매우 혼잡";
+  if (trafficIndex >= 80) trafficIndexGrade = "매우 원활";
+  else if (trafficIndex >= 65) trafficIndexGrade = "원활";
+  else if (trafficIndex >= 50) trafficIndexGrade = "보통";
+  else if (trafficIndex >= 35) trafficIndexGrade = "혼잡";
+
+  let congestionLevel = "원활";
+  if (congestedRatio >= 25) congestionLevel = "매우 혼잡";
+  else if (congestedRatio >= 15) congestionLevel = "혼잡";
+  else if (congestedRatio >= 8 || slowRatio >= 30) congestionLevel = "다소 혼잡";
+
+  topCandidates.forEach((item, index) => { item.rank = index + 1; });
+
+  return {
+    stats: {
+      totalCount,
+      averageSpeed,
+      trafficIndex,
+      trafficIndexGrade,
+      statusCounts: { smooth: smoothCount, slow: slowCount, congested: congestedCount },
+      statusRatios: { smooth: smoothRatio, slow: slowRatio, congested: congestedRatio },
+      congestionLevel,
+      slowestRoad: slowestRow ? {
+        roadName: slowestRow.roadName || "무명도로",
+        section: `${slowestRow.startName || ""} → ${slowestRow.endName || ""}`.trim(),
+        speed: Number(slowestRow.speed)
+      } : null
+    },
+    top10: topCandidates
+  };
+}
+
+/**
  * 전체 로우에 분석 메타데이터를 보강하는 헬퍼
  */
 export function enrichRowsWithTrafficAnalysis(rows) {
