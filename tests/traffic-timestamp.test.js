@@ -88,8 +88,8 @@ test("traffic API returns a valid fallback timestamp when incremental state has 
     env
   });
 
-  assert.equal(response.status, 200);
   const payload = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(payload));
   assert.equal(payload.updatedAt, expectedTimestamp);
   assert.equal(payload.top10[0].speed, 1);
   assert.equal(payload.data[0].speed, 1);
