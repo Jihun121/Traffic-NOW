@@ -22,6 +22,7 @@ const state = {
   snapshotFetchedAt: "",
   snapshotRegionKey: "",
   snapshotType: "",
+  snapshotAnalysisUpdatedAt: "",
   autoRefreshTimer: null,
   lastAutoRefreshAt: 0
 };
@@ -1666,14 +1667,17 @@ async function loadTraffic(regionKey = "busan", forceRefresh = false) {
     const previousFetchedAt = state.snapshotFetchedAt;
     const previousRegionKey = state.snapshotRegionKey;
     const previousSnapshotType = state.snapshotType;
+    const previousAnalysisUpdatedAt = state.snapshotAnalysisUpdatedAt;
     const snapshotChanged =
       previousFetchedAt !== payload.updatedAt ||
       previousRegionKey !== regionKey ||
+      previousAnalysisUpdatedAt !== (payload.analysisUpdatedAt || "") ||
       forceRefresh;
 
     state.snapshotFetchedAt = payload.updatedAt || "";
     state.snapshotRegionKey = regionKey;
     state.snapshotType = payload.snapshotType || "COMPLETE";
+    state.snapshotAnalysisUpdatedAt = payload.analysisUpdatedAt || "";
     updateRegionSelection(regionKey, payload.region?.name || "");
 
     if (snapshotChanged || state.rawData.length === 0) {
