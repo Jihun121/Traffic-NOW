@@ -1,0 +1,20 @@
+name: Traffic timestamp regression tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  timestamp-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run timestamp regression tests
+        run: node --experimental-default-type=module --test tests/traffic-timestamp.test.js
