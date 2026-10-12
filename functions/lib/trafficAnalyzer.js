@@ -312,7 +312,15 @@ export function calculateBusanTrafficOverview(rows) {
         congestionLevel: "데이터 없음",
         slowestRoad: null
       },
-      top10: []
+      top10: [],
+      aggregate: {
+        totalCount: 0,
+        totalSpeed: 0,
+        smoothCount: 0,
+        slowCount: 0,
+        congestedCount: 0,
+        slowestRoad: null
+      }
     };
   }
 
@@ -350,7 +358,19 @@ export function calculateBusanTrafficOverview(rows) {
         speed: Number(slowestRow.speed)
       } : null
     },
-    top10: topCandidates
+    top10: topCandidates,
+    aggregate: {
+      totalCount,
+      totalSpeed,
+      smoothCount,
+      slowCount,
+      congestedCount,
+      slowestRoad: slowestRow ? {
+        roadName: slowestRow.roadName || "무명도로",
+        section: `${slowestRow.startName || ""} → ${slowestRow.endName || ""}`.trim(),
+        speed: Number(slowestRow.speed)
+      } : null
+    }
   };
 }
 
