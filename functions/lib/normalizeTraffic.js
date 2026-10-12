@@ -14,6 +14,9 @@ const FIELD_ALIASES = {
   endLongitude: ["endLongitude", "endLng", "endLon", "edLng", "종점경도", "종점_lng", "toLng"],
   updatedAt: [
     "updatedAt",
+    "statsDt",
+    "statsDT",
+    "stats_dt",
     "createdDate",
     "collectDate",
     "collectedAt",
