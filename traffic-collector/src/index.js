@@ -562,7 +562,12 @@ async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
   const nextIndex = [
     ...indexEntries.filter((entry) => {
       const timestamp = Date.parse(entry?.fetchedAt || "");
-      return Number.isFinite(timestamp) && timestamp >= cutoff;
+      return (
+        Number.isFinite(timestamp) &&
+        timestamp >= cutoff &&
+        entry?.fetchedAt !== fetchedAt &&
+        entry?.key !== historyKey
+      );
     }),
     {
       key: historyKey,
@@ -774,6 +779,42 @@ export default {
       const cycleInProgress = incrementalCollectorEnabled && state?.inProgress === true;
       const previousSnapshot =
         (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
+
+      // 완성 스냅샷 저장 후 이력 보관만 실패한 경우, 새 수집을 시작하기 전에 이 작업을 재시도한다.
+      if (incrementalCollectorEnabled && state?.phase === "history-pending") {
+        if (!previousSnapshot || !Array.isArray(previousSnapshot.rows)) {
+          throw new Error("TRAFFIC_HISTORY_PENDING_SNAPSHOT_MISSING");
+        }
+
+        const busanRows = previousSnapshot.rows.filter((row) => row?.source !== "ITS");
+        const historyResult = await archiveHistoricalSnapshot(env, previousSnapshot, busanRows);
+        await env.TRAFFIC_CACHE.delete(COLLECTOR_ACCUMULATOR_KEY);
+        await env.TRAFFIC_CACHE.put(
+          COLLECTOR_STATE_KEY,
+          JSON.stringify({
+            collectorVersion: 3,
+            inProgress: false,
+            phase: null,
+            currentPage: 1,
+            totalPages: Number(previousSnapshot.collection?.totalPages || 0),
+            reportedTotalCount: Number(previousSnapshot.collection?.reportedTotalCount || 0),
+            completedPages: [],
+            failedPages: [],
+            cycleStartedAt: null,
+            refreshedLinks: 0,
+            updatedAt: new Date().toISOString(),
+            lastCompletedAt: previousSnapshot.fetchedAt || new Date().toISOString()
+          }),
+          { expirationTtl: COLLECTION_TTL }
+        );
+        console.log({
+          event: "collector-history-pending-recovered",
+          historyKey: historyResult.historyKey,
+          historyEntries: historyResult.historyEntries,
+          historyRows: historyResult.historyRows
+        });
+        return;
+      }
 
       let currentPage = Number(state?.currentPage || 1);
       let totalPages = Number(state?.totalPages || 0);
@@ -1171,10 +1212,30 @@ export default {
         expirationTtl: LATEST_SNAPSHOT_TTL
       });
 
-      // 완성된 부산 전체 사이클을 시계열 이력으로 보관한다.
-      // 이력 저장 실패가 최신 스냅샷 제공을 막지 않도록 별도로 처리한다.
+      // COMPLETE 스냅샷이 저장된 뒤 CPU 제한으로 이력 저장이 중단돼도 수집 상태를 보호한다.
+      await env.TRAFFIC_CACHE.put(
+        COLLECTOR_STATE_KEY,
+        JSON.stringify({
+          collectorVersion: 3,
+          inProgress: false,
+          phase: "history-pending",
+          currentPage: 1,
+          totalPages,
+          reportedTotalCount,
+          completedPages: [],
+          failedPages: [],
+          cycleStartedAt: null,
+          refreshedLinks: 0,
+          updatedAt: new Date().toISOString(),
+          lastCompletedAt: snapshot.fetchedAt
+        }),
+        { expirationTtl: COLLECTION_TTL }
+      );
+
+      let historyArchived = false;
       try {
         const historyResult = await archiveHistoricalSnapshot(env, snapshot, busanRowsForHistory);
+        historyArchived = true;
         console.log({
           event: "collector-history-write-success",
           historyKey: historyResult.historyKey,
@@ -1188,25 +1249,33 @@ export default {
         });
       }
 
-      await env.TRAFFIC_CACHE.delete(COLLECTOR_ACCUMULATOR_KEY);
-
-      await env.TRAFFIC_CACHE.put(
-        COLLECTOR_STATE_KEY,
-        JSON.stringify({
-          collectorVersion: 3,
-          inProgress: false,
-          currentPage: 1,
-          totalPages,
-          reportedTotalCount,
-          completedPages: [],
-          failedPages: [],
-          cycleStartedAt: null,
-          refreshedLinks: 0,
-          updatedAt: new Date().toISOString(),
-          lastCompletedAt: new Date().toISOString()
-        }),
-        { expirationTtl: COLLECTION_TTL }
-      );
+      if (historyArchived) {
+        await env.TRAFFIC_CACHE.delete(COLLECTOR_ACCUMULATOR_KEY);
+        await env.TRAFFIC_CACHE.put(
+          COLLECTOR_STATE_KEY,
+          JSON.stringify({
+            collectorVersion: 3,
+            inProgress: false,
+            phase: null,
+            currentPage: 1,
+            totalPages,
+            reportedTotalCount,
+            completedPages: [],
+            failedPages: [],
+            cycleStartedAt: null,
+            refreshedLinks: 0,
+            updatedAt: new Date().toISOString(),
+            lastCompletedAt: snapshot.fetchedAt
+          }),
+          { expirationTtl: COLLECTION_TTL }
+        );
+      } else {
+        console.warn({
+          event: "collector-history-pending",
+          fetchedAt: snapshot.fetchedAt,
+          message: "이력 저장을 다음 Cron 실행에서 재시도합니다."
+        });
+      }
 
       console.log({
         event: "collector-kv-write-success",
