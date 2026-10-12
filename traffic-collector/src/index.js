@@ -335,6 +335,7 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "") {
 
   // TOP 20만 유지해 감지된 모든 구간을 정렬하지 않는다.
   for (const row of rows) {
+    if (row?.source === "ITS") continue;
     const speed = Number(row.speed);
     if (!Number.isFinite(speed) || speed < 0) continue;
 
@@ -386,6 +387,7 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "") {
   const updatedAt = now.toISOString();
 
   for (const row of rows) {
+    if (row?.source === "ITS") continue;
     const speed = Number(row.speed);
     if (!Number.isFinite(speed) || speed < 0) continue;
 
