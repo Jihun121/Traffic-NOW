@@ -4,6 +4,7 @@ const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKT
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
 const SNAPSHOT_KEY = "traffic:busan:latest"; // 구형 스냅샷 호환용
 const SNAPSHOT_ANALYSIS_KEY = "traffic:busan:latest-analysis";
+const ITS_SNAPSHOT_KEY = "traffic:busan:its:latest";
 const COLLECTOR_STATE_KEY = "traffic:busan:collector-state";
 const POSTPROCESS_STATE_KEY = "traffic:busan:postprocess-state";
 const PAGE_SIZE = 100;
