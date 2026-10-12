@@ -1484,20 +1484,45 @@ export default {
       const nowIso = new Date().toISOString();
       for (const [groupId, groupPages] of pagesByGroup) {
         const oldShard = await readCycleRowShard(env, cycleId, groupId);
-        const pages = { ...oldShard.pages };
+        const oldPages = oldShard.pages || {};
+        const pages = { ...oldPages };
+        const replacesExistingPage = groupPages.some((batchPage) =>
+          Array.isArray(oldPages[String(batchPage.page)])
+        );
         for (const batchPage of groupPages) {
           pages[String(batchPage.page)] = batchPage.rows;
         }
 
-        const groupRows = rowsFromPageShard({ pages });
-        const groupAnalysis = calculateBusanAnalysis(groupRows);
-        const groupSummary = {
-          stats: groupAnalysis.stats,
-          top10: groupAnalysis.top10,
-          aggregate: groupAnalysis.aggregate,
-          totalRows: groupRows.length,
-          updatedAt: nowIso
-        };
+        let groupSummary;
+        // Normal path: the fetched pages have not been stored before. Reuse the
+        // existing group's aggregate and TOP 10, analysing only the new 100-row pages.
+        // A retry may replace a page already written before a checkpoint, so that
+        // recovery path rebuilds the group from rows to avoid double-counting.
+        if (oldShard.summary?.aggregate && !replacesExistingPage) {
+          const pageAnalyses = groupPages.map((batchPage) =>
+            calculateBusanAnalysis(batchPage.rows)
+          );
+          const combined = combineGroupAnalyses([oldShard.summary, ...pageAnalyses]);
+          const addedRows = groupPages.reduce((sum, batchPage) => sum + batchPage.rows.length, 0);
+          groupSummary = {
+            stats: combined.stats,
+            top10: combined.top10,
+            aggregate: combined.aggregate,
+            totalRows: Number(oldShard.summary.totalRows || 0) + addedRows,
+            updatedAt: nowIso
+          };
+        } else {
+          const groupRows = rowsFromPageShard({ pages });
+          const groupAnalysis = calculateBusanAnalysis(groupRows);
+          groupSummary = {
+            stats: groupAnalysis.stats,
+            top10: groupAnalysis.top10,
+            aggregate: groupAnalysis.aggregate,
+            totalRows: groupRows.length,
+            updatedAt: nowIso
+          };
+        }
+
         await env.TRAFFIC_CACHE.put(
           getCycleRowShardKey(cycleId, groupId),
           JSON.stringify({
