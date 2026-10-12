@@ -128,14 +128,38 @@ export async function onRequestGet(context) {
     if (linkId) {
       const candidates = entries.slice(0, limit);
       const matched = [];
+      // KV reads count as Worker subrequests. Bound the search below the Free-plan
+      // per-invocation limit, including the history-index read performed above.
+      const maxHistoryReads = 45;
+      let historyReads = 0;
 
       for (const entry of candidates) {
         if (!entry?.key || !isSafeHistoryKey(String(entry.key))) continue;
+        if (historyReads >= maxHistoryReads) break;
 
         const snapshot = await context.env.TRAFFIC_CACHE.get(entry.key, "json");
-        if (!snapshot || !Array.isArray(snapshot.rows)) continue;
+        historyReads += 1;
+        if (!snapshot) continue;
 
-        const row = snapshot.rows.find((item) => String(item?.linkId || "") === linkId);
+        let row = Array.isArray(snapshot.rows)
+          ? snapshot.rows.find((item) => String(item?.linkId || "") === linkId)
+          : null;
+
+        if (!row && snapshot.rowCycleId) {
+          // Sharded history stores a pointer to its retained row cycle instead of
+          // copying all 9k rows into every historical snapshot.
+          for (let groupId = 0; groupId < ROW_GROUP_COUNT && historyReads < maxHistoryReads; groupId += 1) {
+            const shard = await context.env.TRAFFIC_CACHE.get(
+              ROW_SHARD_KEY_PREFIX + String(snapshot.rowCycleId) + ":" + groupId,
+              "json"
+            );
+            historyReads += 1;
+            const shardRows = rowsFromShard(shard);
+            row = shardRows.find((item) => String(item?.linkId || "") === linkId) || null;
+            if (row) break;
+          }
+        }
+
         if (!row) continue;
 
         matched.push({
