@@ -363,6 +363,7 @@ export async function loadTrafficSnapshot(env) {
     suddenCongestion: latestAnalysis?.suddenCongestion ||
       legacySnapshot?.suddenCongestion || { detectedCount: 0, items: [] },
     trafficBriefing: latestAnalysis?.trafficBriefing || legacySnapshot?.trafficBriefing || null,
+    analysisUpdatedAt: latestAnalysis?.updatedAt || "",
     rows,
     totalCount: rows.length,
     fetchedAt: updatedAt,
