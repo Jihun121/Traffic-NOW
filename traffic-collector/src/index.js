@@ -482,6 +482,14 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "", time
   // 이전에는 8개 시간대의 모든 기준값을 한 KV 객체에 담아 매번 전부 읽고 썼다.
   // 현재 시간대의 기준값만 읽고 갱신한다. v2 단일 객체는 사용하지 않고 새 기준을 쌓는다.
   const baseline = (await env.TRAFFIC_CACHE.get(baselineKey, "json")) || {};
+  // If CPU/time limits interrupt a post-processing invocation after this shard was
+  // stored but before the collector checkpoint, reuse the exact result on retry.
+  if (baseline?.version === BASELINE_VERSION &&
+      baseline?.lastResultSampleId === stableSampleId &&
+      baseline?.lastResult) {
+    return baseline.lastResult;
+  }
+
   const currentBucket =
     baseline?.version === BASELINE_VERSION &&
     baseline?.bucket &&
@@ -573,18 +581,7 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "", time
     };
   }
 
-  await env.TRAFFIC_CACHE.put(
-    baselineKey,
-    JSON.stringify({
-      version: BASELINE_VERSION,
-      updatedAt,
-      currentTimeBand: timeBand,
-      bucket: nextBucket
-    }),
-    { expirationTtl: HISTORY_RETENTION_TTL }
-  );
-
-  return {
+  const result = {
     detectedCount,
     items: alerts,
     baselineSampleSize: BASELINE_SAMPLE_SIZE,
@@ -596,6 +593,21 @@ async function calculateAndUpdateSuddenCongestion(env, rows, sampleId = "", time
       minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
     }
   };
+
+  await env.TRAFFIC_CACHE.put(
+    baselineKey,
+    JSON.stringify({
+      version: BASELINE_VERSION,
+      updatedAt,
+      currentTimeBand: timeBand,
+      lastResultSampleId: stableSampleId,
+      lastResult: result,
+      bucket: nextBucket
+    }),
+    { expirationTtl: HISTORY_RETENTION_TTL }
+  );
+
+  return result;
 }
 
 function buildTrafficBriefing(stats, previousEntry, suddenCongestion, top10) {
@@ -1372,6 +1384,8 @@ export default {
         failedPages: [...failedPages].sort((a, b) => a - b),
         cycleStartedAt,
         refreshedLinks,
+        lastCompletedAt: state.lastCompletedAt || null,
+        lastIncrementalUpdateAt: state.lastIncrementalUpdateAt || null,
         updatedAt: new Date().toISOString()
       };
       await env.TRAFFIC_CACHE.put(
@@ -1534,6 +1548,7 @@ export default {
             cycleStartedAt,
             refreshedLinks,
             lastBatchRows: batchPages.reduce((sum, item) => sum + item.rows.length, 0),
+            lastCompletedAt: state.lastCompletedAt || null,
             updatedAt: nowIso,
             lastIncrementalUpdateAt: nowIso
           }),
