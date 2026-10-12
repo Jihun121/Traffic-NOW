@@ -1,6 +1,5 @@
 import { filterTrafficRegion } from "../lib/filterTrafficRegion.js";
-
-const SNAPSHOT_KEY = "traffic:busan:latest";
+import { loadTrafficSnapshot } from "../lib/trafficSnapshot.js";
 const MAP_ROW_LIMIT = 10000;
 
 function json(data, status = 200, extraHeaders = {}) {
@@ -47,7 +46,7 @@ export async function onRequestGet(context) {
       }, 503);
     }
 
-    const snapshot = await context.env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json");
+    const snapshot = await loadTrafficSnapshot(context.env);
 
     if (!snapshot || !Array.isArray(snapshot.rows) || snapshot.rows.length === 0) {
       return json({
