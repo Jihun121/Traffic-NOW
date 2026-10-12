@@ -194,6 +194,16 @@ function combineTrafficSummaries(summaries) {
   return { stats: buildStatsFromAggregate(aggregate), top10, aggregate };
 }
 
+function firstValidTimestamp(...values) {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const candidate = value.trim();
+    if (!candidate || !Number.isFinite(Date.parse(candidate))) continue;
+    return candidate;
+  }
+  return null;
+}
+
 function buildCollectionMeta(state) {
   if (state?.inProgress) {
     return {
@@ -206,7 +216,7 @@ function buildCollectionMeta(state) {
       failedPages: Array.isArray(state.failedPages) ? state.failedPages : [],
       refreshedRows: Number(state.lastBatchRows || 0),
       refreshedLinks: Number(state.refreshedLinks || 0),
-      lastIncrementalUpdateAt: state.lastIncrementalUpdateAt || state.updatedAt || null
+      lastIncrementalUpdateAt: firstValidTimestamp(state.lastIncrementalUpdateAt, state.updatedAt)
     };
   }
 
@@ -463,9 +473,13 @@ export async function loadTrafficSnapshot(env) {
   }
 
   const latestAnalysis = analysisMatchesActiveCycle ? analysis : null;
-  const updatedAt = isIncremental
-    ? (state.lastIncrementalUpdateAt || state.updatedAt || legacySnapshot?.fetchedAt || new Date().toISOString())
-    : (state.lastCompletedAt || latestAnalysis?.fetchedAt || legacySnapshot?.fetchedAt || new Date().toISOString());
+  const updatedAt = firstValidTimestamp(
+    isIncremental ? state.lastIncrementalUpdateAt : state.lastCompletedAt,
+    state.updatedAt,
+    latestAnalysis?.fetchedAt,
+    latestAnalysis?.updatedAt,
+    legacySnapshot?.fetchedAt
+  ) || new Date().toISOString();
 
   return {
     ok: true,
