@@ -15,8 +15,9 @@ const HISTORY_KEY_PREFIX = "traffic:busan:history:";
 const HISTORY_RETENTION_DAYS = 14;
 const HISTORY_RETENTION_TTL = 60 * 60 * 24 * HISTORY_RETENTION_DAYS;
 const HISTORY_MAX_ENTRIES = 96;
-const BASELINE_KEY = "traffic:busan:baseline-by-timeband";
-const BASELINE_VERSION = 2;
+// 시간대별 기준값을 별도 KV에 저장해 한 번의 실행에서 전체 시간대 데이터를 재직렬화하지 않는다.
+const BASELINE_KEY_PREFIX = "traffic:busan:baseline-by-timeband:v3:";
+const BASELINE_VERSION = 3;
 const BASELINE_SAMPLE_SIZE = 6;
 const SUDDEN_CONGESTION_MIN_SAMPLES = 3;
 const SUDDEN_CONGESTION_MIN_DROP_KMH = 10;
@@ -308,24 +309,29 @@ function median(values) {
 }
 
 async function calculateAndUpdateSuddenCongestion(env, rows) {
-  const baseline = (await env.TRAFFIC_CACHE.get(BASELINE_KEY, "json")) || {};
-  const baselineBuckets =
-    baseline?.version === BASELINE_VERSION && baseline?.buckets &&
-    typeof baseline.buckets === "object" && !Array.isArray(baseline.buckets)
-      ? baseline.buckets
-      : {};
-
   const now = new Date();
   const koreaHour = getKoreaHour(now);
   const timeBand = getTimeBand(koreaHour);
-  const currentBucket = baselineBuckets[timeBand.key] &&
-    typeof baselineBuckets[timeBand.key] === "object" &&
-    !Array.isArray(baselineBuckets[timeBand.key])
-      ? baselineBuckets[timeBand.key]
+  const baselineKey = BASELINE_KEY_PREFIX + timeBand.key;
+
+  // 이전에는 8개 시간대의 모든 기준값을 한 KV 객체에 담아 매번 전부 읽고 썼다.
+  // 현재 시간대의 기준값만 읽고 갱신한다. v2 단일 객체는 사용하지 않고 새 기준을 쌓는다.
+  const baseline = (await env.TRAFFIC_CACHE.get(baselineKey, "json")) || {};
+  const currentBucket =
+    baseline?.version === BASELINE_VERSION &&
+    baseline?.bucket &&
+    typeof baseline.bucket === "object" &&
+    !Array.isArray(baseline.bucket)
+      ? baseline.bucket
       : {};
 
   const alerts = [];
+  const compareAlerts = (a, b) => {
+    if (b.dropRatio !== a.dropRatio) return b.dropRatio - a.dropRatio;
+    return b.dropKmh - a.dropKmh;
+  };
 
+  // TOP 20만 유지해 감지된 모든 구간을 정렬하지 않는다.
   for (const row of rows) {
     const speed = Number(row.speed);
     if (!Number.isFinite(speed) || speed < 0) continue;
@@ -333,46 +339,45 @@ async function calculateAndUpdateSuddenCongestion(env, rows) {
     const key = getTrafficRowKey(row);
     const previous = currentBucket[key];
     const samples = Array.isArray(previous?.samples)
-      ? previous.samples
-          .map(Number)
-          .filter(Number.isFinite)
-          .slice(-BASELINE_SAMPLE_SIZE)
+      ? previous.samples.map(Number).filter(Number.isFinite).slice(-BASELINE_SAMPLE_SIZE)
       : [];
 
-    if (samples.length >= SUDDEN_CONGESTION_MIN_SAMPLES) {
-      const baselineSpeed = median(samples);
-      const dropKmh = Number((baselineSpeed - speed).toFixed(1));
-      const dropRatio = baselineSpeed > 0
-        ? Number(((dropKmh / baselineSpeed) * 100).toFixed(1))
-        : 0;
+    if (samples.length < SUDDEN_CONGESTION_MIN_SAMPLES) continue;
 
-      if (
-        dropKmh >= SUDDEN_CONGESTION_MIN_DROP_KMH &&
-        dropRatio >= SUDDEN_CONGESTION_MIN_DROP_RATIO * 100
-      ) {
-        alerts.push({
-          linkId: row.linkId || "",
-          roadName: row.roadName || "도로명 없음",
-          startName: row.startName || "-",
-          endName: row.endName || "-",
-          currentSpeed: speed,
-          baselineSpeed,
-          dropKmh,
-          dropRatio,
-          status: row.status || "UNKNOWN",
-          statusText: row.statusText || "정보 없음"
-        });
-      }
+    const baselineSpeed = median(samples);
+    const dropKmh = Number((baselineSpeed - speed).toFixed(1));
+    const dropRatio = baselineSpeed > 0
+      ? Number(((dropKmh / baselineSpeed) * 100).toFixed(1))
+      : 0;
+
+    if (
+      dropKmh < SUDDEN_CONGESTION_MIN_DROP_KMH ||
+      dropRatio < SUDDEN_CONGESTION_MIN_DROP_RATIO * 100
+    ) continue;
+
+    const alert = {
+      linkId: row.linkId || "",
+      roadName: row.roadName || "도로명 없음",
+      startName: row.startName || "-",
+      endName: row.endName || "-",
+      currentSpeed: speed,
+      baselineSpeed,
+      dropKmh,
+      dropRatio,
+      status: row.status || "UNKNOWN",
+      statusText: row.statusText || "정보 없음"
+    };
+
+    let insertAt = alerts.findIndex((candidate) => compareAlerts(alert, candidate) < 0);
+    if (insertAt < 0) insertAt = alerts.length;
+    if (insertAt < SUDDEN_CONGESTION_MAX_RESULTS) {
+      alerts.splice(insertAt, 0, alert);
+      if (alerts.length > SUDDEN_CONGESTION_MAX_RESULTS) alerts.pop();
     }
   }
 
-  alerts.sort((a, b) => {
-    if (b.dropRatio !== a.dropRatio) return b.dropRatio - a.dropRatio;
-    return b.dropKmh - a.dropKmh;
-  });
-
-  const nextBuckets = { ...baselineBuckets };
   const nextBucket = { ...currentBucket };
+  const updatedAt = now.toISOString();
 
   for (const row of rows) {
     const speed = Number(row.speed);
@@ -380,36 +385,31 @@ async function calculateAndUpdateSuddenCongestion(env, rows) {
 
     const key = getTrafficRowKey(row);
     const previousSamples = Array.isArray(nextBucket[key]?.samples)
-      ? nextBucket[key].samples
-          .map(Number)
-          .filter(Number.isFinite)
-          .slice(-BASELINE_SAMPLE_SIZE + 1)
+      ? nextBucket[key].samples.map(Number).filter(Number.isFinite).slice(-BASELINE_SAMPLE_SIZE + 1)
       : [];
 
     nextBucket[key] = {
       linkId: row.linkId || "",
       roadName: row.roadName || "",
       samples: [...previousSamples, speed],
-      updatedAt: now.toISOString()
+      updatedAt
     };
   }
 
-  nextBuckets[timeBand.key] = nextBucket;
-
   await env.TRAFFIC_CACHE.put(
-    BASELINE_KEY,
+    baselineKey,
     JSON.stringify({
       version: BASELINE_VERSION,
-      updatedAt: now.toISOString(),
+      updatedAt,
       currentTimeBand: timeBand,
-      buckets: nextBuckets
+      bucket: nextBucket
     }),
     { expirationTtl: HISTORY_RETENTION_TTL }
   );
 
   return {
     detectedCount: alerts.length,
-    items: alerts.slice(0, SUDDEN_CONGESTION_MAX_RESULTS),
+    items: alerts,
     baselineSampleSize: BASELINE_SAMPLE_SIZE,
     minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
     mode: "same-timeband-baseline",
