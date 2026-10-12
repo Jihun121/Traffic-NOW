@@ -5,6 +5,7 @@ const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
 const SNAPSHOT_KEY = "traffic:busan:latest"; // 구형 스냅샷 호환용
 const SNAPSHOT_ANALYSIS_KEY = "traffic:busan:latest-analysis";
 const COLLECTOR_STATE_KEY = "traffic:busan:collector-state";
+const POSTPROCESS_STATE_KEY = "traffic:busan:postprocess-state";
 const PAGE_SIZE = 100;
 const PAGES_PER_RUN = 3;
 const REQUEST_TIMEOUT_MS = 60000;
@@ -1011,6 +1012,259 @@ async function archiveHistoricalSummary(env, analysis) {
   );
 
   return { historyKey, historyEntries: nextIndex.length, historyRows: historyEntry.totalCount };
+}
+
+async function runPostprocessing(env, itsApiKey) {
+  const job = await env.TRAFFIC_CACHE.get(POSTPROCESS_STATE_KEY, "json");
+  if (!job?.phase) {
+    console.log({ event: "collector-postprocess-idle" });
+    return;
+  }
+
+  const cycleId = String(job.cycleId || "");
+  const fetchedAt = String(job.fetchedAt || "");
+  if (!cycleId || !fetchedAt) throw new Error("TRAFFIC_POSTPROCESS_STATE_INVALID");
+
+  const analysis = await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
+  if (!analysis || analysis.rowCycleId !== cycleId || analysis.fetchedAt !== fetchedAt) {
+    throw new Error("TRAFFIC_POSTPROCESS_ANALYSIS_MISMATCH");
+  }
+
+  if (job.phase === "its-pending") {
+    let itsRows = [];
+    let itsWarning = null;
+
+    try {
+      itsRows = await fetchItsData(itsApiKey);
+      itsRows = itsRows.map((row) => {
+        const category = getRoadCategory(row.roadName);
+        const evaluation = evaluateTrafficStatus(row.speed, category);
+        return {
+          ...row,
+          category,
+          categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
+          status: evaluation.status,
+          statusText: evaluation.statusText,
+          statusColor: evaluation.color,
+          source: "ITS",
+          updatedAt: new Date().toISOString()
+        };
+      });
+      if (itsRows.length === 0) itsWarning = "ITS API에서 유효한 교통 데이터가 반환되지 않았습니다.";
+    } catch (error) {
+      itsWarning = error?.message || String(error);
+      console.warn({ event: "collector-its-fetch-failed", error: itsWarning });
+      itsRows = [];
+    }
+
+    await env.TRAFFIC_CACHE.put(
+      ITS_SNAPSHOT_KEY,
+      JSON.stringify({ fetchedAt, rows: itsRows, warning: itsWarning }),
+      { expirationTtl: LATEST_SNAPSHOT_TTL }
+    );
+
+    const groupSummaries = await Promise.all(
+      Array.from({ length: ROW_GROUP_COUNT }, async (_, groupId) =>
+        (await readCycleGroupSummary(env, cycleId, groupId)) || calculateBusanAnalysis([])
+      )
+    );
+    const busanOverview = combineGroupAnalyses(groupSummaries);
+    const itsOverview = itsRows.length ? calculateBusanAnalysis(itsRows) : null;
+    const overall = combineGroupAnalyses(
+      itsOverview ? [...groupSummaries, itsOverview] : groupSummaries
+    );
+
+    analysis.source = itsRows.length
+      ? "부산광역시 링크소통정보 & 국토교통부 ITS"
+      : "부산광역시 링크소통정보";
+    analysis.warning = itsWarning;
+    analysis.stats = overall.stats;
+    analysis.top10 = overall.top10;
+    analysis.busanStats = busanOverview.stats;
+    analysis.busanTop10 = busanOverview.top10;
+    analysis.suddenAnalysisComplete = false;
+    analysis.suddenCongestion = {
+      detectedCount: 0,
+      items: [],
+      baselineSampleSize: BASELINE_SAMPLE_SIZE,
+      minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
+      mode: "same-timeband-baseline",
+      pending: true
+    };
+    analysis.trafficBriefing = null;
+    analysis.updatedAt = new Date().toISOString();
+
+    await env.TRAFFIC_CACHE.put(
+      SNAPSHOT_ANALYSIS_KEY,
+      JSON.stringify(analysis),
+      { expirationTtl: LATEST_SNAPSHOT_TTL }
+    );
+    await env.TRAFFIC_CACHE.put(
+      POSTPROCESS_STATE_KEY,
+      JSON.stringify({
+        ...job,
+        phase: "sudden-pending",
+        cursor: 0,
+        pendingAlerts: [],
+        pendingDetectedCount: 0,
+        timeBand: getTimeBand(getKoreaHour(new Date(fetchedAt))),
+        updatedAt: new Date().toISOString()
+      }),
+      { expirationTtl: COLLECTION_TTL }
+    );
+    console.log({
+      event: "collector-postprocess-its-complete",
+      fetchedAt,
+      itsRows: itsRows.length,
+      totalRows: overall.stats.totalCount,
+      avgSpeed: overall.stats.averageSpeed
+    });
+    return;
+  }
+
+  if (job.phase === "sudden-pending") {
+    const cursor = Math.max(0, Math.min(ROW_GROUP_COUNT, Number(job.cursor || 0)));
+    const groupIds = [];
+    for (
+      let groupId = cursor;
+      groupId < Math.min(ROW_GROUP_COUNT, cursor + BASELINE_SHARDS_PER_RUN);
+      groupId += 1
+    ) {
+      groupIds.push(groupId);
+    }
+
+    const timeBand = job.timeBand || getTimeBand(getKoreaHour(new Date(fetchedAt)));
+    let pendingAlerts = Array.isArray(job.pendingAlerts) ? job.pendingAlerts : [];
+    let pendingDetectedCount = Number(job.pendingDetectedCount || 0);
+
+    for (const groupId of groupIds) {
+      const shard = await readCycleRowShard(env, cycleId, groupId);
+      const result = await calculateAndUpdateSuddenCongestion(
+        env,
+        rowsFromPageShard(shard),
+        fetchedAt,
+        timeBand,
+        groupId
+      );
+      pendingDetectedCount += Number(result.detectedCount || 0);
+      pendingAlerts = mergeSuddenCongestionAlerts(pendingAlerts, result.items);
+    }
+
+    const nextCursor = cursor + groupIds.length;
+    if (nextCursor >= ROW_GROUP_COUNT) {
+      analysis.suddenCongestion = {
+        detectedCount: pendingDetectedCount,
+        items: pendingAlerts,
+        baselineSampleSize: BASELINE_SAMPLE_SIZE,
+        minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
+        mode: "same-timeband-baseline",
+        pending: false,
+        timeBand,
+        thresholds: {
+          minimumDropKmh: SUDDEN_CONGESTION_MIN_DROP_KMH,
+          minimumDropRatio: SUDDEN_CONGESTION_MIN_DROP_RATIO
+        }
+      };
+      analysis.suddenAnalysisComplete = true;
+      analysis.updatedAt = new Date().toISOString();
+      await env.TRAFFIC_CACHE.put(
+        SNAPSHOT_ANALYSIS_KEY,
+        JSON.stringify(analysis),
+        { expirationTtl: LATEST_SNAPSHOT_TTL }
+      );
+      await env.TRAFFIC_CACHE.put(
+        POSTPROCESS_STATE_KEY,
+        JSON.stringify({
+          ...job,
+          phase: "briefing-pending",
+          cursor: 0,
+          pendingAlerts: [],
+          pendingDetectedCount: 0,
+          updatedAt: new Date().toISOString()
+        }),
+        { expirationTtl: COLLECTION_TTL }
+      );
+      console.log({
+        event: "collector-postprocess-sudden-complete",
+        fetchedAt,
+        baselineShards: ROW_GROUP_COUNT,
+        detectedCount: pendingDetectedCount
+      });
+    } else {
+      await env.TRAFFIC_CACHE.put(
+        POSTPROCESS_STATE_KEY,
+        JSON.stringify({
+          ...job,
+          phase: "sudden-pending",
+          cursor: nextCursor,
+          pendingAlerts,
+          pendingDetectedCount,
+          timeBand,
+          updatedAt: new Date().toISOString()
+        }),
+        { expirationTtl: COLLECTION_TTL }
+      );
+      console.log({
+        event: "collector-postprocess-sudden-progress",
+        fetchedAt,
+        completedShards: nextCursor,
+        totalShards: ROW_GROUP_COUNT,
+        detectedCountSoFar: pendingDetectedCount
+      });
+    }
+    return;
+  }
+
+  if (job.phase === "briefing-pending") {
+    const historyIndex = (await env.TRAFFIC_CACHE.get(HISTORY_INDEX_KEY, "json")) || [];
+    const previousHistoryEntry = Array.isArray(historyIndex)
+      ? historyIndex
+          .filter((entry) => Number.isFinite(Date.parse(entry?.fetchedAt || "")))
+          .sort((a, b) => Date.parse(b.fetchedAt) - Date.parse(a.fetchedAt))[0]
+      : null;
+
+    analysis.trafficBriefing = buildTrafficBriefing(
+      analysis.stats,
+      previousHistoryEntry,
+      analysis.suddenCongestion,
+      analysis.top10
+    );
+    analysis.updatedAt = new Date().toISOString();
+    await env.TRAFFIC_CACHE.put(
+      SNAPSHOT_ANALYSIS_KEY,
+      JSON.stringify(analysis),
+      { expirationTtl: LATEST_SNAPSHOT_TTL }
+    );
+    await env.TRAFFIC_CACHE.put(
+      POSTPROCESS_STATE_KEY,
+      JSON.stringify({
+        ...job,
+        phase: "history-pending",
+        updatedAt: new Date().toISOString()
+      }),
+      { expirationTtl: COLLECTION_TTL }
+    );
+    console.log({
+      event: "collector-postprocess-briefing-complete",
+      fetchedAt,
+      trend: analysis.trafficBriefing?.trend || null
+    });
+    return;
+  }
+
+  if (job.phase === "history-pending") {
+    const historyResult = await archiveHistoricalSummary(env, analysis);
+    await env.TRAFFIC_CACHE.delete(POSTPROCESS_STATE_KEY);
+    console.log({
+      event: "collector-history-archive-success",
+      historyKey: historyResult.historyKey,
+      historyEntries: historyResult.historyEntries,
+      historyRows: historyResult.historyRows
+    });
+    return;
+  }
+
+  throw new Error("TRAFFIC_POSTPROCESS_PHASE_UNKNOWN:" + String(job.phase));
 }
 
 export default {
