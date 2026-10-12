@@ -284,6 +284,9 @@ export async function loadTrafficSnapshot(env) {
         summaryList.push(calculateBusanTrafficOverview(groupRows));
       } else if (baseShard.summary) {
         summaryList.push(baseShard.summary);
+      } else if (groupRows.length) {
+        // Fail safe for a missing/expired summary key; only this one group is rebuilt.
+        summaryList.push(calculateBusanTrafficOverview(groupRows));
       }
     }
   } else if (state.activeCycleId) {
@@ -301,18 +304,9 @@ export async function loadTrafficSnapshot(env) {
     // Bootstrap from legacy: apply new pages over the last complete dataset.
     const currentShards = await readCycleShards(env, String(state.currentCycleId));
     const overlayRows = flattenPageShards(currentShards);
-    const completedPages = Array.isArray(state.completedPages) ? state.completedPages.length : 0;
-    const totalPages = Number(state.totalPages || 0);
-    const nearCycleEnd = totalPages > 0 && totalPages - completedPages <= PAGES_PER_RUN;
-
-    if (nearCycleEnd && overlayRows.length > 0) {
-      // The last batch is about to become the active dataset; avoid deserializing/merging
-      // the full legacy snapshot and thousands of newly refreshed rows for one response.
-      rows = overlayRows;
-      summaryList = currentShards.map((shard) => shard.summary).filter(Boolean);
-    } else {
-      rows = mergeRows(rows, overlayRows);
-    }
+    // During the one-time migration, never hide legacy rows just because the cycle is
+    // near its end. A failed late page must not make the API briefly drop those links.
+    rows = mergeRows(rows, overlayRows);
   }
 
   const validItsSnapshot = Boolean(
@@ -340,12 +334,8 @@ export async function loadTrafficSnapshot(env) {
     }
     overview = combineTrafficSummaries(summaryList);
   } else if (isIncremental && !state.activeCycleId) {
-    const completedPages = Array.isArray(state.completedPages) ? state.completedPages.length : 0;
-    const totalPages = Number(state.totalPages || 0);
-    const nearCycleEnd = totalPages > 0 && totalPages - completedPages <= PAGES_PER_RUN;
-    if (nearCycleEnd && summaryList.length) {
-      overview = combineTrafficSummaries(summaryList);
-    } else if (legacySnapshot?.stats && Array.isArray(legacySnapshot?.top10)) {
+    // Keep the known-good legacy overview until the first sharded cycle is fully active.
+    if (legacySnapshot?.stats && Array.isArray(legacySnapshot?.top10)) {
       overview = { stats: legacySnapshot.stats, top10: legacySnapshot.top10 };
     } else {
       overview = calculateBusanTrafficOverview(rows);
