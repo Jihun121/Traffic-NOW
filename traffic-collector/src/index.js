@@ -1316,7 +1316,9 @@ export default {
       let state = (await env.TRAFFIC_CACHE.get(COLLECTOR_STATE_KEY, "json")) || {};
       const version4 = Number(state?.collectorVersion || 0) === 4;
 
-      if (version4 && !state.inProgress && state.activeCycleId) {
+      if (version4 && state.activeCycleId) {
+        // Recovery is also allowed while a newer row cycle is collecting because
+        // postprocessing reads only the active completed cycle and separate KV keys.
         const existingJob = await env.TRAFFIC_CACHE.get(POSTPROCESS_STATE_KEY, "json");
         if (!existingJob?.phase) {
           const analysis = await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
