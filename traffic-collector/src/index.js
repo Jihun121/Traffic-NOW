@@ -594,65 +594,6 @@ async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
   };
 }
 
-function calculateTop10(rows) {
-  const topCandidates = [];
-
-  const compareTrafficRows = (a, b) => {
-    if (a.status === "CONGESTED" && b.status !== "CONGESTED") return -1;
-    if (a.status !== "CONGESTED" && b.status === "CONGESTED") return 1;
-    return Number(a.speed) - Number(b.speed);
-  };
-
-  // 전체 9천여 건을 정렬하지 않고, 상위 10개 구간만 유지한다.
-  for (const row of rows) {
-    const speed = Number(row.speed);
-    if (!Number.isFinite(speed) || speed < 0) continue;
-
-    const category = row.category || getRoadCategory(row.roadName);
-    const evaluation = evaluateTrafficStatus(speed, category);
-    const item = {
-      ...row,
-      category,
-      categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
-      status: evaluation.status,
-      statusText: evaluation.statusText,
-      statusColor: evaluation.color
-    };
-    const sectionKey = `${item.roadName}-${item.startName}-${item.endName}`;
-
-    // 동일 구간이 여러 링크로 나타나면 그 구간의 가장 높은 순위 후보만 유지한다.
-    const duplicateIndex = topCandidates.findIndex((candidate) =>
-      `${candidate.roadName}-${candidate.startName}-${candidate.endName}` === sectionKey
-    );
-    if (duplicateIndex >= 0) {
-      if (compareTrafficRows(item, topCandidates[duplicateIndex]) >= 0) continue;
-      topCandidates.splice(duplicateIndex, 1);
-    }
-
-    let insertAt = topCandidates.findIndex((candidate) => compareTrafficRows(item, candidate) < 0);
-    if (insertAt < 0) insertAt = topCandidates.length;
-
-    if (insertAt < 10) {
-      topCandidates.splice(insertAt, 0, item);
-      if (topCandidates.length > 10) topCandidates.pop();
-    }
-  }
-
-  return topCandidates.map((item, index) => ({
-    rank: index + 1,
-    linkId: item.linkId,
-    roadName: item.roadName || "도로명 없음",
-    startName: item.startName || "-",
-    endName: item.endName || "-",
-    speed: Number(item.speed),
-    categoryName: item.categoryName,
-    status: item.status,
-    statusText: item.statusText,
-    statusColor: item.statusColor,
-    updatedAt: item.updatedAt || ""
-  }));
-}
-
 async function fetchBusanPage(apiKey, pageNo) {
   const url = new URL(BUSAN_API_URL);
   url.searchParams.set("serviceKey", apiKey);
