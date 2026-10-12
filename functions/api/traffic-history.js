@@ -3,8 +3,11 @@ const HISTORY_KEY_PREFIX = "traffic:busan:history:";
 const DEFAULT_LIMIT = 24;
 const MAX_LIMIT = 96;
 const MAX_ROWS = 100;
-const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
-const ROW_GROUP_COUNT = 10;
+const LEGACY_ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
+const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v5:";
+const LEGACY_ROW_SHARD_PAGES = 10;
+const DEFAULT_ROW_SHARD_PAGES = 5;
+const DEFAULT_TOTAL_PAGES = 93;
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -34,6 +37,17 @@ function rowsFromShard(shard) {
     .filter(Number.isInteger)
     .sort((a, b) => a - b)
     .flatMap((page) => Array.isArray(shard.pages[String(page)]) ? shard.pages[String(page)] : []);
+}
+
+function rowShardConfig(snapshot) {
+  const pagesPerShard = Number(snapshot?.rowShardPages || LEGACY_ROW_SHARD_PAGES);
+  return {
+    pagesPerShard,
+    shardCount: Math.max(1, Math.ceil((Number(snapshot?.totalPages) || DEFAULT_TOTAL_PAGES) / pagesPerShard)),
+    prefix: pagesPerShard === LEGACY_ROW_SHARD_PAGES
+      ? LEGACY_ROW_SHARD_KEY_PREFIX
+      : ROW_SHARD_KEY_PREFIX
+  };
 }
 
 function normalizeFetchedAt(value) {
@@ -148,9 +162,10 @@ export async function onRequestGet(context) {
         if (!row && snapshot.rowCycleId) {
           // Sharded history stores a pointer to its retained row cycle instead of
           // copying all 9k rows into every historical snapshot.
-          for (let groupId = 0; groupId < ROW_GROUP_COUNT && historyReads < maxHistoryReads; groupId += 1) {
+          const shardConfig = rowShardConfig(snapshot);
+          for (let groupId = 0; groupId < shardConfig.shardCount && historyReads < maxHistoryReads; groupId += 1) {
             const shard = await context.env.TRAFFIC_CACHE.get(
-              ROW_SHARD_KEY_PREFIX + String(snapshot.rowCycleId) + ":" + groupId,
+              shardConfig.prefix + String(snapshot.rowCycleId) + ":" + groupId,
               "json"
             );
             historyReads += 1;
@@ -224,8 +239,9 @@ export async function onRequestGet(context) {
     } else {
       // 새 HISTORY는 대형 rows 배열을 복제하지 않고 완료된 row-cycle을 참조한다.
       // 그룹 0에는 원본 페이지 1~10이 들어 있어 기존 API 계약처럼 최대 100행을 반환할 수 있다.
+      const shardConfig = rowShardConfig(snapshot);
       const firstShard = await context.env.TRAFFIC_CACHE.get(
-        ROW_SHARD_KEY_PREFIX + String(snapshot.rowCycleId) + ":0",
+        shardConfig.prefix + String(snapshot.rowCycleId) + ":0",
         "json"
       );
       rows = rowsFromShard(firstShard).slice(0, MAX_ROWS);
