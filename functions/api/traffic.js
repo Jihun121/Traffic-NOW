@@ -3,6 +3,7 @@ import { enrichRowsWithTrafficAnalysis } from "../lib/trafficAnalyzer.js";
 
 const SNAPSHOT_RESPONSE_TTL_SECONDS = 30;
 const SNAPSHOT_KEY = "traffic:busan:latest";
+const SNAPSHOT_ANALYSIS_KEY = "traffic:busan:latest-analysis";
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -57,9 +58,23 @@ export async function onRequestGet(context) {
     const region = getTrafficRegion(regionKey);
     const allRows = snapshot.rows;
 
+    // COMPLETE 분석은 별도 Cron 단계에서 계산하므로, 해당 분석이 완성되면 작은 보조 KV에서 읽는다.
+    // 새 수집 사이클의 INCREMENTAL 스냅샷은 직전 COMPLETE 분석을 계속 재사용한다.
+    const snapshotAnalysis = await context.env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json");
+    const useSnapshotAnalysis = Boolean(
+      snapshotAnalysis &&
+      (snapshot.snapshotType === "INCREMENTAL" || snapshotAnalysis.fetchedAt === snapshot.fetchedAt)
+    );
+
     // Collector가 산출한 전체 통계/TOP10을 우선 재사용한다.
     const stats = snapshot.stats || null;
     const top10 = Array.isArray(snapshot.top10) ? snapshot.top10 : [];
+    const suddenCongestion = useSnapshotAnalysis && snapshotAnalysis.suddenCongestion
+      ? snapshotAnalysis.suddenCongestion
+      : (snapshot.suddenCongestion || { detectedCount: 0, items: [] });
+    const trafficBriefing = useSnapshotAnalysis && snapshotAnalysis.trafficBriefing
+      ? snapshotAnalysis.trafficBriefing
+      : (snapshot.trafficBriefing || null);
 
     const filteredRows = filterTrafficRegion(allRows, regionKey);
     const enrichedFiltered = enrichRowsWithTrafficAnalysis(filteredRows);
@@ -81,11 +96,8 @@ export async function onRequestGet(context) {
       },
       stats,
       top10,
-      suddenCongestion: snapshot.suddenCongestion || {
-        detectedCount: 0,
-        items: []
-      },
-      trafficBriefing: snapshot.trafficBriefing || null,
+      suddenCongestion,
+      trafficBriefing,
       data: sortedFiltered.slice(0, 100),
       filteredCount: filteredRows.length,
       totalCount: allRows.length,
