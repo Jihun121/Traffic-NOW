@@ -86,6 +86,7 @@ export async function onRequestGet(context) {
       filteredCount: filteredRows.length,
       totalCount: allRows.length,
       updatedAt: snapshot.fetchedAt || new Date().toISOString(),
+      analysisUpdatedAt: snapshot.analysisUpdatedAt || "",
       cache: "SNAPSHOT",
       warning: snapshot.warning || null,
       refreshRequested,
