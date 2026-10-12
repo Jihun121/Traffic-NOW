@@ -1011,6 +1011,10 @@ async function archiveHistoricalSummary(env, analysis) {
       averageSpeed: Number(busanStats.averageSpeed || 0),
       trafficIndex: Number(busanStats.trafficIndex || 0),
       congestedRatio: Number(busanStats.statusRatios?.congested || 0),
+      slowRatio: Number(busanStats.statusRatios?.slow || 0),
+      smoothRatio: Number(busanStats.statusRatios?.smooth || 0),
+      congestionLevel: busanStats.congestionLevel || "데이터 없음",
+      suddenCongestionCount: Number(analysis.suddenCongestion?.detectedCount || 0),
       rowCycleId: historyEntry.rowCycleId,
       rowsSharded: true
     }
