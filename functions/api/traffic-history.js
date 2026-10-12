@@ -3,6 +3,8 @@ const HISTORY_KEY_PREFIX = "traffic:busan:history:";
 const DEFAULT_LIMIT = 24;
 const MAX_LIMIT = 96;
 const MAX_ROWS = 100;
+const ROW_SHARD_KEY_PREFIX = "traffic:busan:rows:v4:";
+const ROW_GROUP_COUNT = 10;
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -23,6 +25,15 @@ function parseLimit(value) {
 
 function isSafeHistoryKey(value) {
   return /^[A-Za-z0-9:_-]+$/.test(value);
+}
+
+function rowsFromShard(shard) {
+  if (!shard || !shard.pages || typeof shard.pages !== "object") return [];
+  return Object.keys(shard.pages)
+    .map(Number)
+    .filter(Number.isInteger)
+    .sort((a, b) => a - b)
+    .flatMap((page) => Array.isArray(shard.pages[String(page)]) ? shard.pages[String(page)] : []);
 }
 
 function normalizeFetchedAt(value) {
@@ -169,7 +180,10 @@ export async function onRequestGet(context) {
 
     const snapshot = await context.env.TRAFFIC_CACHE.get(historyKey, "json");
 
-    if (!snapshot || !Array.isArray(snapshot.rows)) {
+    if (
+      !snapshot ||
+      (!Array.isArray(snapshot.rows) && !snapshot.rowCycleId)
+    ) {
       return json({
         ok: false,
         error: "해당 시점의 교통 이력을 찾을 수 없습니다.",
@@ -180,7 +194,18 @@ export async function onRequestGet(context) {
       }, 404);
     }
 
-    const rows = snapshot.rows.slice(0, MAX_ROWS);
+    let rows = [];
+    if (Array.isArray(snapshot.rows)) {
+      rows = snapshot.rows.slice(0, MAX_ROWS);
+    } else {
+      // 새 HISTORY는 대형 rows 배열을 복제하지 않고 완료된 row-cycle을 참조한다.
+      // 그룹 0에는 원본 페이지 1~10이 들어 있어 기존 API 계약처럼 최대 100행을 반환할 수 있다.
+      const firstShard = await context.env.TRAFFIC_CACHE.get(
+        ROW_SHARD_KEY_PREFIX + String(snapshot.rowCycleId) + ":0",
+        "json"
+      );
+      rows = rowsFromShard(firstShard).slice(0, MAX_ROWS);
+    }
 
     return json({
       ok: true,
@@ -190,7 +215,7 @@ export async function onRequestGet(context) {
       stats: snapshot.stats || null,
       suddenCongestion: snapshot.suddenCongestion || null,
       trafficBriefing: snapshot.trafficBriefing || null,
-      totalCount: Number(snapshot.totalCount || snapshot.rows.length),
+      totalCount: Number(snapshot.totalCount || snapshot.stats?.totalCount || 0),
       returnedRows: rows.length,
       data: rows,
       timing: {
