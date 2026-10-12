@@ -124,8 +124,35 @@ function evaluateTrafficStatus(speed, roadCategory = "URBAN_ROAD") {
 }
 
 function calculateBusanStats(rows) {
-  const validRows = rows.filter((r) => Number.isFinite(Number(r.speed)) && Number(r.speed) >= 0);
-  const totalCount = validRows.length;
+  let totalCount = 0;
+  let totalSpeed = 0;
+  let smoothCount = 0;
+  let slowCount = 0;
+  let congestedCount = 0;
+  let slowestRow = null;
+  let slowestSpeed = Infinity;
+
+  // 한 번의 순회에서 통계와 최저 속도를 계산한다.
+  // 이전 구현은 filter + 통계 순회 + 전체 정렬로 같은 배열을 여러 번 처리했다.
+  for (const row of rows) {
+    const speed = Number(row.speed);
+    if (!Number.isFinite(speed) || speed < 0) continue;
+
+    totalCount += 1;
+    totalSpeed += speed;
+
+    const category = row.category || getRoadCategory(row.roadName);
+    const evaluation = evaluateTrafficStatus(speed, category);
+    if (evaluation.status === "SMOOTH") smoothCount += 1;
+    else if (evaluation.status === "SLOW") slowCount += 1;
+    else if (evaluation.status === "CONGESTED") congestedCount += 1;
+
+    if (speed < slowestSpeed) {
+      slowestSpeed = speed;
+      slowestRow = row;
+    }
+  }
+
   if (totalCount === 0) {
     return {
       totalCount: 0,
@@ -137,21 +164,6 @@ function calculateBusanStats(rows) {
       congestionLevel: "데이터 없음",
       slowestRoad: null
     };
-  }
-
-  let totalSpeed = 0;
-  let smoothCount = 0;
-  let slowCount = 0;
-  let congestedCount = 0;
-
-  for (const row of validRows) {
-    const spd = Number(row.speed);
-    totalSpeed += spd;
-    const cat = row.category || getRoadCategory(row.roadName);
-    const evalResult = evaluateTrafficStatus(spd, cat);
-    if (evalResult.status === "SMOOTH") smoothCount++;
-    else if (evalResult.status === "SLOW") slowCount++;
-    else if (evalResult.status === "CONGESTED") congestedCount++;
   }
 
   const averageSpeed = Number((totalSpeed / totalCount).toFixed(1));
@@ -175,11 +187,10 @@ function calculateBusanStats(rows) {
   else if (congestedRatio >= 15) congestionLevel = "혼잡";
   else if (congestedRatio >= 8 || slowRatio >= 30) congestionLevel = "다소 혼잡";
 
-  const sorted = [...validRows].sort((a, b) => Number(a.speed) - Number(b.speed));
-  const slowestRoad = sorted[0] ? {
-    roadName: sorted[0].roadName || "무명도로",
-    section: `${sorted[0].startName || ""} → ${sorted[0].endName || ""}`.trim(),
-    speed: Number(sorted[0].speed)
+  const slowestRoad = slowestRow ? {
+    roadName: slowestRow.roadName || "무명도로",
+    section: `${slowestRow.startName || ""} → ${slowestRow.endName || ""}`.trim(),
+    speed: Number(slowestRow.speed)
   } : null;
 
   return {
@@ -522,48 +533,62 @@ async function archiveHistoricalSnapshot(env, snapshot, busanRows) {
 }
 
 function calculateTop10(rows) {
-  const validRows = rows.filter((r) => Number.isFinite(Number(r.speed)) && Number(r.speed) >= 0);
-  const enriched = validRows.map((r) => {
-    const category = r.category || getRoadCategory(r.roadName);
-    const evaluation = evaluateTrafficStatus(r.speed, category);
-    return {
-      ...r,
+  const topCandidates = [];
+
+  const compareTrafficRows = (a, b) => {
+    if (a.status === "CONGESTED" && b.status !== "CONGESTED") return -1;
+    if (a.status !== "CONGESTED" && b.status === "CONGESTED") return 1;
+    return Number(a.speed) - Number(b.speed);
+  };
+
+  // 전체 9천여 건을 정렬하지 않고, 상위 10개 구간만 유지한다.
+  for (const row of rows) {
+    const speed = Number(row.speed);
+    if (!Number.isFinite(speed) || speed < 0) continue;
+
+    const category = row.category || getRoadCategory(row.roadName);
+    const evaluation = evaluateTrafficStatus(speed, category);
+    const item = {
+      ...row,
       category,
       categoryName: SPEED_CRITERIA[category]?.categoryName || "일반도로",
       status: evaluation.status,
       statusText: evaluation.statusText,
       statusColor: evaluation.color
     };
-  });
+    const sectionKey = `${item.roadName}-${item.startName}-${item.endName}`;
 
-  enriched.sort((a, b) => {
-    if (a.status === "CONGESTED" && b.status !== "CONGESTED") return -1;
-    if (a.status !== "CONGESTED" && b.status === "CONGESTED") return 1;
-    return Number(a.speed) - Number(b.speed);
-  });
+    // 동일 구간이 여러 링크로 나타나면 그 구간의 가장 높은 순위 후보만 유지한다.
+    const duplicateIndex = topCandidates.findIndex((candidate) =>
+      `${candidate.roadName}-${candidate.startName}-${candidate.endName}` === sectionKey
+    );
+    if (duplicateIndex >= 0) {
+      if (compareTrafficRows(item, topCandidates[duplicateIndex]) >= 0) continue;
+      topCandidates.splice(duplicateIndex, 1);
+    }
 
-  const top10 = [];
-  const seenRoadSections = new Set();
-  for (const item of enriched) {
-    if (top10.length >= 10) break;
-    const key = `${item.roadName}-${item.startName}-${item.endName}`;
-    if (seenRoadSections.has(key)) continue;
-    seenRoadSections.add(key);
-    top10.push({
-      rank: top10.length + 1,
-      linkId: item.linkId,
-      roadName: item.roadName || "도로명 없음",
-      startName: item.startName || "-",
-      endName: item.endName || "-",
-      speed: Number(item.speed),
-      categoryName: item.categoryName,
-      status: item.status,
-      statusText: item.statusText,
-      statusColor: item.statusColor,
-      updatedAt: item.updatedAt || ""
-    });
+    let insertAt = topCandidates.findIndex((candidate) => compareTrafficRows(item, candidate) < 0);
+    if (insertAt < 0) insertAt = topCandidates.length;
+
+    if (insertAt < 10) {
+      topCandidates.splice(insertAt, 0, item);
+      if (topCandidates.length > 10) topCandidates.pop();
+    }
   }
-  return top10;
+
+  return topCandidates.map((item, index) => ({
+    rank: index + 1,
+    linkId: item.linkId,
+    roadName: item.roadName || "도로명 없음",
+    startName: item.startName || "-",
+    endName: item.endName || "-",
+    speed: Number(item.speed),
+    categoryName: item.categoryName,
+    status: item.status,
+    statusText: item.statusText,
+    statusColor: item.statusColor,
+    updatedAt: item.updatedAt || ""
+  }));
 }
 
 async function fetchBusanPage(apiKey, pageNo) {
@@ -638,8 +663,8 @@ async function fetchItsData(itsApiKey) {
   }
 }
 
-function normalizeBusanItems(payload) {
-  const normalized = normalizeTrafficPayload(payload);
+function normalizeBusanItems(payload, normalizedPayload = null) {
+  const normalized = normalizedPayload || normalizeTrafficPayload(payload);
 
   return normalized.rows.map((row) => {
     const roadName = String(row.roadName || "").trim();
@@ -685,8 +710,10 @@ export default {
       // 전체 사이클이 완료되면 오래된 링크를 정리한 완성 스냅샷으로 교체한다.
       let state = await env.TRAFFIC_CACHE.get(COLLECTOR_STATE_KEY, "json");
 
-      // collectorVersion이 없는 기존 진행 상태는 새 점진 수집 사이클로 안전하게 전환한다.
-      const incrementalCollectorEnabled = Number(state?.collectorVersion || 0) === 2;
+      // 최신 스냅샷이 수집 누적 데이터의 단일 원본이다.
+      // 이전 구조는 latest와 accumulator에 같은 9천여 행을 중복 저장/파싱했다.
+      // v2 상태는 한 번 새 사이클을 시작하면서 v3의 경량 상태로 전환한다.
+      const incrementalCollectorEnabled = Number(state?.collectorVersion || 0) === 3;
       const cycleInProgress = incrementalCollectorEnabled && state?.inProgress === true;
       const previousSnapshot =
         (await env.TRAFFIC_CACHE.get(SNAPSHOT_KEY, "json")) || null;
@@ -695,11 +722,7 @@ export default {
       let totalPages = Number(state?.totalPages || 0);
       let reportedTotalCount = Number(state?.reportedTotalCount || 0);
       let cycleStartedAt = state?.cycleStartedAt || null;
-      let seenKeys = new Set(
-        Array.isArray(state?.seenKeys)
-          ? state.seenKeys.map((key) => String(key))
-          : []
-      );
+      let refreshedLinks = Number(state?.refreshedLinks || 0);
 
       if (!Number.isInteger(currentPage) || currentPage < 1) currentPage = 1;
 
@@ -719,24 +742,30 @@ export default {
           : []
       );
 
-      let accumulator = [];
+      let accumulator = Array.isArray(previousSnapshot?.rows)
+        ? previousSnapshot.rows
+        : [];
+
       if (cycleInProgress) {
-        accumulator = (await env.TRAFFIC_CACHE.get(COLLECTOR_ACCUMULATOR_KEY, "json")) || [];
-        if (!Array.isArray(accumulator)) accumulator = [];
+        // v3는 latest rows 자체를 누적 본문으로 사용해 대형 KV를 한 번만 읽고 쓴다.
+        // 이전 상태에서 latest가 비어 있는 예외 상황에만 레거시 accumulator로 복구한다.
+        if (accumulator.length === 0) {
+          const legacyAccumulator =
+            (await env.TRAFFIC_CACHE.get(COLLECTOR_ACCUMULATOR_KEY, "json")) || [];
+          if (Array.isArray(legacyAccumulator)) accumulator = legacyAccumulator;
+        }
       } else {
-        // 새 사이클은 직전 스냅샷을 베이스로 시작한다.
-        // 이번 사이클에서 새로 수집된 링크만 즉시 최신 값으로 덮어쓴다.
-        accumulator = Array.isArray(previousSnapshot?.rows)
-          ? previousSnapshot.rows
-          : [];
+        // v2 상태/새 설치는 직전 스냅샷을 기준으로 새 사이클을 시작한다.
         completedPages = new Set();
         failedPages = new Set();
-        seenKeys = new Set();
         currentPage = 1;
         totalPages = 0;
         reportedTotalCount = 0;
         cycleStartedAt = new Date().toISOString();
+        refreshedLinks = 0;
       }
+
+      if (!cycleStartedAt) cycleStartedAt = new Date().toISOString();
 
       const pageNumbers = [];
       const selectedPages = new Set();
@@ -809,7 +838,7 @@ export default {
           totalPages = Math.max(1, Math.ceil(reportedTotalCount / PAGE_SIZE));
         }
 
-        const pageRows = normalizeBusanItems(payload);
+        const pageRows = normalizeBusanItems(payload, normalized);
 
         if (pageRows.length === 0) {
           failedPages.add(page);
@@ -848,10 +877,12 @@ export default {
 
       for (const row of batchRows) {
         const key = getTrafficRowKey(row);
-        mergedRows.set(key, row);
-        seenKeys.add(key);
+        // 모든 행에 이번 사이클에서 실제 확인했는지 표시한다.
+        // 이전에는 9천여 개 링크 키를 collector-state에 매번 저장했다.
+        mergedRows.set(key, { ...row, __collectorCycleId: cycleStartedAt });
       }
 
+      refreshedLinks += batchRows.length;
       accumulator = Array.from(mergedRows.values());
 
       const lastCollectedPage = completedPages.size > 0
@@ -876,32 +907,8 @@ export default {
       });
 
       if (!cycleComplete) {
-        await env.TRAFFIC_CACHE.put(
-          COLLECTOR_ACCUMULATOR_KEY,
-          JSON.stringify(accumulator),
-          { expirationTtl: COLLECTION_TTL }
-        );
-
         const nextPage = Math.max(currentPage, sequentialPage);
         const nowIso = new Date().toISOString();
-
-        await env.TRAFFIC_CACHE.put(
-          COLLECTOR_STATE_KEY,
-          JSON.stringify({
-            collectorVersion: 2,
-            inProgress: true,
-            currentPage: totalPages > 0 && nextPage > totalPages ? 1 : nextPage,
-            totalPages,
-            reportedTotalCount,
-            completedPages: [...completedPages].sort((a, b) => a - b),
-            failedPages: [...failedPages].sort((a, b) => a - b),
-            seenKeys: [...seenKeys],
-            cycleStartedAt,
-            updatedAt: nowIso,
-            lastIncrementalUpdateAt: nowIso
-          }),
-          { expirationTtl: COLLECTION_TTL }
-        );
 
         const incrementalStats = calculateBusanStats(accumulator);
         const incrementalTop10 = calculateTop10(accumulator);
@@ -930,7 +937,7 @@ export default {
             completedPages: completedPages.size,
             failedPages: [...failedPages].sort((a, b) => a - b),
             refreshedRows: batchRows.length,
-            refreshedLinks: seenKeys.size,
+            refreshedLinks,
             lastIncrementalUpdateAt: nowIso
           }
         };
@@ -943,13 +950,33 @@ export default {
           );
         }
 
+        // 체크포인트는 최신 스냅샷이 저장된 뒤 기록한다.
+        // CPU 초과가 snapshot 생성 중 발생해도 다음 실행이 같은 페이지를 안전하게 재시도한다.
+        await env.TRAFFIC_CACHE.put(
+          COLLECTOR_STATE_KEY,
+          JSON.stringify({
+            collectorVersion: 3,
+            inProgress: true,
+            currentPage: totalPages > 0 && nextPage > totalPages ? 1 : nextPage,
+            totalPages,
+            reportedTotalCount,
+            completedPages: [...completedPages].sort((a, b) => a - b),
+            failedPages: [...failedPages].sort((a, b) => a - b),
+            cycleStartedAt,
+            refreshedLinks,
+            updatedAt: nowIso,
+            lastIncrementalUpdateAt: nowIso
+          }),
+          { expirationTtl: COLLECTION_TTL }
+        );
+
         console.log({
           event: "collector-incremental-snapshot-saved",
           nextPage: totalPages > 0 && nextPage > totalPages ? 1 : nextPage,
           totalPages,
           accumulatedRows: accumulator.length,
           refreshedRows: batchRows.length,
-          refreshedLinks: seenKeys.size,
+          refreshedLinks,
           completedPages: completedPages.size,
           failedPages: [...failedPages].sort((a, b) => a - b)
         });
@@ -961,7 +988,13 @@ export default {
       // 오래된 링크를 정리하고 완성 스냅샷으로 확정한다.
       const sourceParts = ["부산광역시 링크소통정보"];
       const warnings = [];
-      const rows = accumulator.filter((row) => seenKeys.has(getTrafficRowKey(row)));
+      const rows = [];
+      for (const row of accumulator) {
+        if (row?.__collectorCycleId !== cycleStartedAt) continue;
+        const cleanRow = { ...row };
+        delete cleanRow.__collectorCycleId;
+        rows.push(cleanRow);
+      }
       const busanRowsForHistory = rows.slice();
 
       // 2. ITS 데이터 수집 (보조/광역)
@@ -1095,15 +1128,15 @@ export default {
       await env.TRAFFIC_CACHE.put(
         COLLECTOR_STATE_KEY,
         JSON.stringify({
-          collectorVersion: 2,
+          collectorVersion: 3,
           inProgress: false,
           currentPage: 1,
           totalPages,
           reportedTotalCount,
           completedPages: [],
           failedPages: [],
-          seenKeys: [],
           cycleStartedAt: null,
+          refreshedLinks: 0,
           updatedAt: new Date().toISOString(),
           lastCompletedAt: new Date().toISOString()
         }),
