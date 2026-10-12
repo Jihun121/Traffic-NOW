@@ -1550,7 +1550,6 @@ export default {
       );
       const busanOverview = combineGroupAnalyses(groupAnalyses);
       const completedAt = new Date().toISOString();
-      const previousAnalysis = (await env.TRAFFIC_CACHE.get(SNAPSHOT_ANALYSIS_KEY, "json")) || {};
       const initialAnalysis = {
         fetchedAt: completedAt,
         rowCycleId: cycleId,
@@ -1562,13 +1561,16 @@ export default {
         top10: busanOverview.top10,
         busanStats: busanOverview.stats,
         busanTop10: busanOverview.top10,
-        suddenCongestion: previousAnalysis.suddenCongestion || {
+        suddenAnalysisComplete: false,
+        suddenCongestion: {
           detectedCount: 0,
           items: [],
           baselineSampleSize: BASELINE_SAMPLE_SIZE,
-          minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES
+          minimumSamples: SUDDEN_CONGESTION_MIN_SAMPLES,
+          mode: "same-timeband-baseline",
+          pending: true
         },
-        trafficBriefing: previousAnalysis.trafficBriefing || null,
+        trafficBriefing: null,
         updatedAt: completedAt
       };
 
