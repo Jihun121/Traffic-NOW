@@ -1,10 +1,11 @@
 /**
- * Selects representative congestion links for the TOP 10 without changing source rows.
+ * Select diverse TOP 10 entries without changing source rows or speeds.
  *
- * Only CONGESTED links on the same named road are clustered. Candidate links that
- * share a node are joined into one connected cluster, and the lowest-speed
- * representative wins. Other traffic statuses remain independent so a free-flowing
- * connector cannot merge otherwise separate congestion areas.
+ * Congested candidates on the same named road that directly share an endpoint
+ * with an already-selected congested candidate are suppressed. This reduces
+ * adjacent-link duplicates without collapsing an entire connected road network
+ * into one result. A lower-ranked link can still represent a distinct bottleneck
+ * farther along the same road.
  */
 function normalizeLabel(value) {
   const normalized = String(value ?? "").trim().toLowerCase().replace(/\s+/g, "");
@@ -23,8 +24,8 @@ function compareCandidates(a, b) {
   const safeBSpeed = Number.isFinite(bSpeed) ? bSpeed : Number.POSITIVE_INFINITY;
   if (safeASpeed !== safeBSpeed) return safeASpeed - safeBSpeed;
 
-  // For equal status and speed, prefer a section with two distinct endpoints over
-  // a self-loop such as "삼락IC → 삼락IC", which is less informative to readers.
+  // For equal status and speed, prefer an informative section over
+  // a self-loop such as "삼락IC → 삼락IC".
   const aStart = normalizeLabel(a?.startName);
   const aEnd = normalizeLabel(a?.endName);
   const bStart = normalizeLabel(b?.startName);
@@ -48,13 +49,44 @@ function getSectionKey(item, index) {
   return `anonymous|${index}`;
 }
 
+function getNamedNodes(item) {
+  return new Set([
+    normalizeLabel(item?.startName),
+    normalizeLabel(item?.endName)
+  ].filter(Boolean));
+}
+
+function isDirectlyAdjacentCongestion(candidate, selected) {
+  if (candidate?.status !== "CONGESTED") return false;
+
+  const road = normalizeLabel(candidate?.roadName);
+  if (!road) return false;
+
+  const candidateNodes = getNamedNodes(candidate);
+  if (candidateNodes.size === 0) return false;
+
+  return selected.some((chosen) => {
+    if (chosen?.status !== "CONGESTED" || normalizeLabel(chosen?.roadName) !== road) {
+      return false;
+    }
+
+    const chosenNodes = getNamedNodes(chosen);
+    for (const node of candidateNodes) {
+      if (chosenNodes.has(node)) return true;
+    }
+    return false;
+  });
+}
+
 /**
- * Select up to `limit` top-ranked items while collapsing adjacent congested
- * links into one representative per connected component. The input array and
- * its records are not mutated.
+ * Select up to `limit` ranked items. Only directly adjacent congested links on
+ * the same road compete for one slot; disconnected congestion remains visible.
+ * Neither the input array nor its records are mutated.
  */
 export function selectDiverseTop10(items, limit = 10) {
-  if (!Array.isArray(items) || items.length === 0 || limit <= 0) return [];
+  if (!Array.isArray(items) || items.length === 0 || !Number.isFinite(Number(limit)) || limit <= 0) {
+    return [];
+  }
 
   const uniqueBySection = new Map();
   items.forEach((item, index) => {
@@ -62,73 +94,20 @@ export function selectDiverseTop10(items, limit = 10) {
     const key = getSectionKey(item, index);
     const existing = uniqueBySection.get(key);
     if (!existing || compareCandidates(item, existing.item) < 0) {
-      uniqueBySection.set(key, { item, key });
+      uniqueBySection.set(key, { item });
     }
   });
 
-  const entries = [...uniqueBySection.values()];
-  const parent = entries.map((_, index) => index);
-  const rank = entries.map(() => 0);
-
-  function find(index) {
-    let root = index;
-    while (parent[root] !== root) root = parent[root];
-    while (parent[index] !== index) {
-      const next = parent[index];
-      parent[index] = root;
-      index = next;
-    }
-    return root;
-  }
-
-  function union(a, b) {
-    let rootA = find(a);
-    let rootB = find(b);
-    if (rootA === rootB) return;
-
-    if (rank[rootA] < rank[rootB]) [rootA, rootB] = [rootB, rootA];
-    parent[rootB] = rootA;
-    if (rank[rootA] === rank[rootB]) rank[rootA] += 1;
-  }
-
-  const firstByRoadNode = new Map();
-  entries.forEach(({ item }, index) => {
-    if (item.status !== "CONGESTED") return;
-    const road = normalizeLabel(item.roadName);
-    if (!road) return;
-
-    const nodes = new Set([
-      normalizeLabel(item.startName),
-      normalizeLabel(item.endName)
-    ].filter(Boolean));
-
-    for (const node of nodes) {
-      const nodeKey = `${road}|${node}`;
-      const previous = firstByRoadNode.get(nodeKey);
-      if (previous === undefined) {
-        firstByRoadNode.set(nodeKey, index);
-      } else {
-        union(index, previous);
-      }
-    }
-  });
-
-  const sorted = entries
-    .map((entry, index) => ({ ...entry, index }))
-    .sort((a, b) => compareCandidates(a.item, b.item));
+  const ranked = [...uniqueBySection.values()]
+    .map(({ item }) => item)
+    .sort(compareCandidates);
 
   const selected = [];
-  const selectedClusters = new Set();
-  for (const entry of sorted) {
-    const item = entry.item;
-    const cluster = item.status === "CONGESTED"
-      ? find(entry.index)
-      : `independent|${entry.index}`;
+  for (const item of ranked) {
+    if (isDirectlyAdjacentCongestion(item, selected)) continue;
 
-    if (selectedClusters.has(cluster)) continue;
-    selectedClusters.add(cluster);
     selected.push(item);
-    if (selected.length >= limit) break;
+    if (selected.length >= Math.floor(Number(limit))) break;
   }
 
   return selected.map((item, index) => ({ ...item, rank: index + 1 }));
