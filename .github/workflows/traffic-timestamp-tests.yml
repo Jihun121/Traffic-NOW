@@ -16,5 +16,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Check Collector Worker syntax
+        run: node --experimental-default-type=module --check traffic-collector/src/index.js
       - name: Run regression tests
         run: node --experimental-default-type=module --test tests/*.test.js
