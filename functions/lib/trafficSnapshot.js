@@ -1,4 +1,5 @@
 import { calculateBusanTrafficOverview } from "./trafficAnalyzer.js";
+import { selectDiverseTop10 } from "./top10Diversity.js";
 
 const LEGACY_SNAPSHOT_KEY = "traffic:busan:latest";
 const COLLECTOR_STATE_KEY = "traffic:busan:collector-state";
@@ -186,10 +187,7 @@ function combineTrafficSummaries(summaries) {
     }
   }
 
-  const top10 = Array.from(bestBySection.values())
-    .sort(compare)
-    .slice(0, 10)
-    .map((item, index) => ({ ...item, rank: index + 1 }));
+  const top10 = selectDiverseTop10(Array.from(bestBySection.values()), 10);
 
   return { stats: buildStatsFromAggregate(aggregate), top10, aggregate };
 }

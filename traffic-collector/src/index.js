@@ -1,4 +1,5 @@
 import { normalizeTrafficPayload } from "../../functions/lib/normalizeTraffic.js";
+import { selectDiverseTop10 } from "../../functions/lib/top10Diversity.js";
 
 const BUSAN_API_URL = "https://apis.data.go.kr/6260000/BusanITSLINKTraffic/LINKTrafficList";
 const ITS_API_URL = "https://openapi.its.go.kr:9443/trafficInfo";
@@ -9,6 +10,8 @@ const COLLECTOR_STATE_KEY = "traffic:busan:collector-state";
 const POSTPROCESS_STATE_KEY = "traffic:busan:postprocess-state";
 const PAGE_SIZE = 100;
 const PAGES_PER_RUN = 3;
+// Keep a wider candidate pool so nearby-link grouping can backfill TOP 10 ranks.
+const TOP_CANDIDATE_BUFFER = 30;
 const REQUEST_TIMEOUT_MS = 60000;
 const LATEST_SNAPSHOT_TTL = 60 * 60 * 24 * 14;
 const COLLECTION_TTL = 60 * 60 * 24 * 14;
@@ -190,7 +193,7 @@ function calculateBusanAnalysis(rows, includeTop10 = true) {
       );
       if (insertAt < 0) insertAt = topCandidates.length;
 
-      if (insertAt < 10) {
+      if (insertAt < TOP_CANDIDATE_BUFFER) {
         topCandidates.splice(insertAt, 0, {
           row,
           sectionKey,
@@ -200,7 +203,7 @@ function calculateBusanAnalysis(rows, includeTop10 = true) {
           statusText: evaluation.statusText,
           statusColor: evaluation.color
         });
-        if (topCandidates.length > 10) topCandidates.pop();
+        if (topCandidates.length > TOP_CANDIDATE_BUFFER) topCandidates.pop();
       }
     }
   }
@@ -255,19 +258,20 @@ function calculateBusanAnalysis(rows, includeTop10 = true) {
     };
   }
 
-  const top10 = includeTop10 ? topCandidates.map((candidate, index) => ({
-    rank: index + 1,
-    linkId: candidate.row.linkId,
-    roadName: candidate.row.roadName || "도로명 없음",
-    startName: candidate.row.startName || "-",
-    endName: candidate.row.endName || "-",
-    speed: candidate.speed,
-    categoryName: candidate.categoryName,
-    status: candidate.status,
-    statusText: candidate.statusText,
-    statusColor: candidate.statusColor,
-    updatedAt: candidate.row.updatedAt || ""
-  })) : [];
+  const top10 = includeTop10
+    ? selectDiverseTop10(topCandidates.map((candidate) => ({
+        linkId: candidate.row.linkId,
+        roadName: candidate.row.roadName || "도로명 없음",
+        startName: candidate.row.startName || "-",
+        endName: candidate.row.endName || "-",
+        speed: candidate.speed,
+        categoryName: candidate.categoryName,
+        status: candidate.status,
+        statusText: candidate.statusText,
+        statusColor: candidate.statusColor,
+        updatedAt: candidate.row.updatedAt || ""
+      })), 10)
+    : [];
 
   return {
     stats,
@@ -371,10 +375,7 @@ function combineGroupAnalyses(groupAnalyses) {
     }
   }
 
-  const top10 = Array.from(bestBySection.values())
-    .sort(compareRows)
-    .slice(0, 10)
-    .map((item, index) => ({ ...item, rank: index + 1 }));
+  const top10 = selectDiverseTop10(Array.from(bestBySection.values()), 10);
 
   return {
     stats: buildStatsFromAggregate(aggregate),
