@@ -7,7 +7,9 @@
  * connector cannot merge otherwise separate congestion areas.
  */
 function normalizeLabel(value) {
-  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/\s+/g, "");
+  if (["-", "n/a", "na", "unknown", "정보없음", "도로명없음"].includes(normalized)) return "";
+  return normalized;
 }
 
 function compareCandidates(a, b) {
