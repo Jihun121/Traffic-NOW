@@ -11,7 +11,7 @@ const FIELD_ALIASES = {
   startLatitude: ["startLatitude", "startLat", "stLat", "시점위도", "시점_lat", "fromLat"],
   startLongitude: ["startLongitude", "startLng", "startLon", "stLng", "시점경도", "시점_lng", "fromLng"],
   endLatitude: ["endLatitude", "endLat", "edLat", "종점위도", "종점_lat", "toLat"],
-  endLongitude: ["endLongitude", "endLng", "endLon", "종점경도", "종점_lat", "toLng"],
+  endLongitude: ["endLongitude", "endLng", "endLon", "edLng", "종점경도", "종점_lng", "toLng"],
   updatedAt: [
     "updatedAt",
     "statsDt",
