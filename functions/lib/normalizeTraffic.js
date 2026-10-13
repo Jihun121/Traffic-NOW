@@ -11,7 +11,7 @@ const FIELD_ALIASES = {
   startLatitude: ["startLatitude", "startLat", "stLat", "시점위도", "시점_lat", "fromLat"],
   startLongitude: ["startLongitude", "startLng", "startLon", "stLng", "시점경도", "시점_lng", "fromLng"],
   endLatitude: ["endLatitude", "endLat", "edLat", "종점위도", "종점_lat", "toLat"],
-  endLongitude: ["endLongitude", "endLng", "endLon", "edLng", "종점경도", "종점_lng", "toLng"],
+  endLongitude: ["endLongitude", "endLng", "endLon", "종점경도", "종점_lat", "toLng"],
   updatedAt: [
     "updatedAt",
     "statsDt",
@@ -43,7 +43,21 @@ const ARRAY_KEYS = [
 ];
 
 function toFiniteNumber(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
   if (value === null || value === undefined || value === "") return null;
+
+  // Numeric strings are common in traffic feeds. Avoid allocating replacement
+  // strings and running two replacements when no separators or units exist.
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed.includes(",") && !/km\/h/i.test(trimmed)) {
+      const number = Number(trimmed);
+      return Number.isFinite(number) ? number : null;
+    }
+  }
 
   const normalized = String(value)
     .replaceAll(",", "")
@@ -75,9 +89,12 @@ function pick(source, aliases) {
   for (const key of aliases) {
     if (Object.prototype.hasOwnProperty.call(source, key)) {
       const value = source[key];
-      if (value !== null && value !== undefined && String(value).trim() !== "") {
-        return value;
-      }
+      // Traffic speed/volume/coordinate fields are commonly numbers; they are
+      // non-empty without needing a String(value) allocation.
+      const nonEmpty = typeof value === "number"
+        ? true
+        : value !== null && value !== undefined && String(value).trim() !== "";
+      if (nonEmpty) return value;
     }
   }
 
@@ -168,9 +185,12 @@ export function normalizeTrafficPayload(payload) {
         updatedAt: String(pick(item, FIELD_ALIASES.updatedAt) ?? "").trim()
       };
     })
-    .filter((row) => row.linkId || row.roadName || row.sectionName)
-    .filter((row) => Number.isFinite(row.speed))
-    .filter((row) => row.speed >= 0 && row.speed <= 160);
+    .filter((row) =>
+      (row.linkId || row.roadName || row.sectionName) &&
+      Number.isFinite(row.speed) &&
+      row.speed >= 0 &&
+      row.speed <= 160
+    );
 
   const reportedTotal = findTotalCount(payload);
 
